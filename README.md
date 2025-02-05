@@ -81,7 +81,7 @@ Advanced arguments:
 **Getting OneShot**
  ```shell
  cd ~
- git clone --depth 1 https://github.com/chickendrop89/OneShot-Extended ose
+ git clone --depth 1 https://github.com/raisul587/OneShot-Extended ose
  ```
 **Running**
  ```shell
