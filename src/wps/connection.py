@@ -351,43 +351,15 @@ class Initialize:
 
     def _cleanup(self):
         """Terminates connections and removes temporary files"""
-        try:
-            if hasattr(self, 'RETSOCK'):
-                try:
-                    self.RETSOCK.close()
-                except:
-                    pass
-            
-            if hasattr(self, 'WPAS'):
-                try:
-                    self.WPAS.terminate()
-                except:
-                    pass
 
-            if hasattr(self, 'RES_SOCKET_FILE') and os.path.exists(self.RES_SOCKET_FILE):
-                try:
-                    os.remove(self.RES_SOCKET_FILE)
-                except:
-                    pass
-
-            if hasattr(self, 'TEMPDIR') and os.path.exists(self.TEMPDIR):
-                try:
-                    shutil.rmtree(self.TEMPDIR, ignore_errors=True)
-                except:
-                    pass
-
-            if hasattr(self, 'TEMPCONF') and os.path.exists(self.TEMPCONF):
-                try:
-                    os.remove(self.TEMPCONF)
-                except:
-                    pass
-        except:
-            pass
+        self.RETSOCK.close()
+        self.WPAS.terminate()
+        os.remove(self.RES_SOCKET_FILE)
+        shutil.rmtree(self.TEMPDIR, ignore_errors=True)
+        os.remove(self.TEMPCONF)
 
     def __del__(self):
-        """Destructor that ensures cleanup is performed safely during shutdown"""
         try:
-            if sys and sys.meta_path is not None:  # Check if Python is not shutting down
-                self._cleanup()
-        except:
+            self._cleanup()
+        except Exception:
             pass
