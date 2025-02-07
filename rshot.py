@@ -11,7 +11,6 @@ import src.wifi.scanner
 import src.wps.connection
 import src.wps.bruteforce
 import src.utils
-import src.args
 
 def signal_handler(signum, frame):
     """Handle interruption gracefully."""
@@ -53,15 +52,39 @@ def parseArgs():
         action='store_true', help='Check if WPS is active on network')
     parser.add_argument('--store-pin-on-fail',
         action='store_true', help='Store calculated PIN if attack fails')
+    parser.add_argument('--mtk-wifi',
+        action='store_true', help='Enable MediaTek Wi-Fi interface device')
     
     return parser.parse_args()
 
-def main():
-    args = parseArgs()
+def init_directories():
+    """Initialize required directories."""
+    pixiewps_dir = src.utils.PIXIEWPS_DIR
+    sessions_dir = src.utils.SESSIONS_DIR
     
+    for directory in [sessions_dir, pixiewps_dir]:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+
+def init_mtk_wifi(enable: bool = True):
+    """Initialize MediaTek WiFi interface."""
+    wmtWifi_device = Path('/dev/wmtWifi')
+    if not wmtWifi_device.is_char_device():
+        src.utils.die('Unable to activate MediaTek Wi-Fi interface device (--mtk-wifi): '
+            '/dev/wmtWifi does not exist or it is not a character device')
+    wmtWifi_device.chmod(0o644)
+    wmtWifi_device.write_text('1' if enable else '0', encoding='utf-8')
+    return wmtWifi_device
+
+def main(args):
+    """Main program logic."""
     # Initialize scanner and collector
     wifi_scanner = src.wifi.scanner.WiFiScanner(args.interface, args.vuln_list)
     wifi_collector = src.wifi.collector.WiFiCollector()
+    android_network = None
+    
+    if src.utils.isAndroid():
+        android_network = src.wifi.android.AndroidNetwork()
     
     # Main loop
     while True:
@@ -107,10 +130,10 @@ def main():
                 print('[+] Session completed successfully')
                 if args.iface_down:
                     src.utils.ifaceCtl(args.interface, action='down')
-                sys.exit(0)
+                return 0
             
             if not args.loop:
-                sys.exit(1)
+                return 1
             
             args.bssid = None
             
@@ -118,7 +141,10 @@ def main():
             print('\n[!] Interrupted by user')
             if args.iface_down:
                 src.utils.ifaceCtl(args.interface, action='down')
-            sys.exit(1)
+            return 1
+        finally:
+            if android_network:
+                android_network.enableWifi()
 
 if __name__ == '__main__':
     # Set up signal handler
@@ -132,36 +158,26 @@ if __name__ == '__main__':
     if os.getuid() != 0:
         src.utils.die('Run it as root')
 
+    # Parse arguments first
+    args = parseArgs()
+
     # Initialize directories
-    pixiewps_dir = src.utils.PIXIEWPS_DIR
-    sessions_dir = src.utils.SESSIONS_DIR
-    
-    for directory in [sessions_dir, pixiewps_dir]:
-        if not os.path.exists(directory):
-            os.makedirs(directory)
+    init_directories()
 
     # Handle MediaTek WiFi interface
+    wmtWifi_device = None
     if args.mtk_wifi:
-        wmtWifi_device = Path('/dev/wmtWifi')
-        if not wmtWifi_device.is_char_device():
-            src.utils.die('Unable to activate MediaTek Wi-Fi interface device (--mtk-wifi): '
-                '/dev/wmtWifi does not exist or it is not a character device')
-        wmtWifi_device.chmod(0o644)
-        wmtWifi_device.write_text('1', encoding='utf-8')
+        wmtWifi_device = init_mtk_wifi(True)
 
     # Initialize interface
     if not src.utils.ifaceCtl(args.interface, action='up'):
         src.utils.die(f'Unable to up interface \'{args.interface}\'')
 
     try:
-        main()
+        sys.exit(main(args))
     finally:
         # Cleanup
-        if src.utils.isAndroid() is True:
-            android_network.enableWifi()
-
         if args.iface_down:
             src.utils.ifaceCtl(args.interface, action='down')
-
-        if args.mtk_wifi:
+        if wmtWifi_device:
             wmtWifi_device.write_text('0', encoding='utf-8')
