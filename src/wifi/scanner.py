@@ -4,6 +4,7 @@ import csv
 import codecs
 import subprocess
 import time
+import threading
 
 from src.utils import REPORTS_DIR
 import src.wps.generator
@@ -113,12 +114,25 @@ class WiFiScanner:
             print('[-] No WPS networks found.')
             return
 
-        # Calculate average signal strength
-        self._averageSignalStrength(networks, self.SCAN_RETRIES)
+        # Show prompt immediately
+        print('\nSelect target (press Enter to refresh):')
+        
+        # Calculate signal strength in background
+        def background_scan():
+            self._averageSignalStrength(networks, self.SCAN_RETRIES)
+            # Update display with new signal info
+            if not args.clear:
+                print('\n')  # Add some space
+            self._displayNetworks(networks)
+
+        # Start background scan in a separate thread
+        scan_thread = threading.Thread(target=background_scan)
+        scan_thread.daemon = True
+        scan_thread.start()
 
         while True:
             try:
-                network_no = input('Select target (press Enter to refresh): ')
+                network_no = input('> ')
 
                 if network_no.lower() in {'r', '0', ''}:
                     if args.clear:
@@ -128,169 +142,115 @@ class WiFiScanner:
                 if int(network_no) in networks.keys():
                     selected_network = networks[int(network_no)]
                     
-                    # Check signal strength
+                    # Enhanced router compatibility checks
+                    signal_ok = True
                     if selected_network['Level'] < self.MIN_SIGNAL_STRENGTH:
                         print(f'[!] Warning: Signal strength ({selected_network["Level"]} dBm) is weak')
                         print('[!] This may affect connection reliability')
-                        if input('[?] Continue anyway? [y/N] ').lower() != 'y':
-                            continue
+                        signal_ok = input('[?] Continue anyway? [y/N] ').lower() == 'y'
                     
-                    # Check WPS version compatibility
-                    if selected_network['WPS version'] == '2.0':
+                    if not signal_ok:
+                        continue
+                    
+                    # WPS version compatibility check
+                    wps_ver = selected_network['WPS version']
+                    if wps_ver == '2.0':
                         print('[!] Note: WPS 2.0 detected - using enhanced security measures')
+                        # Adjust connection parameters for WPS 2.0
+                        self._adjustWPS2Parameters(selected_network)
+                    elif wps_ver == '1.0h':
+                        print('[*] WPS 1.0h detected - optimizing for better compatibility')
+                        self._adjustWPS1Parameters(selected_network)
+                    
+                    # Check for known vendor optimizations
+                    vendor = selected_network.get('Vendor', 'Unknown')
+                    if vendor != 'Unknown':
+                        print(f'[*] Detected {vendor} router - applying vendor-specific optimizations')
+                        self._applyVendorOptimizations(selected_network)
                     
                     return selected_network['BSSID']
 
                 raise IndexError
             except IndexError:
                 print('Invalid number')
+            except ValueError:
+                print('Please enter a number')
+
+    def _adjustWPS2Parameters(self, network):
+        """Adjust parameters for WPS 2.0 routers."""
+        network['WPS_Timeout'] = 60  # Longer timeout for WPS 2.0
+        network['WPS_Retries'] = 5   # More retries
+        network['Delay_Between_Retries'] = 3  # Longer delay between retries
+        network['Use_Extended_Auth'] = True   # Use extended authentication
+
+    def _adjustWPS1Parameters(self, network):
+        """Adjust parameters for WPS 1.0h routers."""
+        network['WPS_Timeout'] = 30  # Standard timeout
+        network['WPS_Retries'] = 3   # Standard retries
+        network['Delay_Between_Retries'] = 2  # Standard delay
+        network['Use_Extended_Auth'] = False  # Standard authentication
+
+    def _applyVendorOptimizations(self, network):
+        """Apply vendor-specific optimizations."""
+        vendor = network.get('Vendor', 'Unknown').upper()
+        
+        vendor_optimizations = {
+            'ASUS': {
+                'Timeout': 45,
+                'Retries': 4,
+                'Auth_Method': 'mixed',
+                'Extended_Compatibility': True
+            },
+            'TPLINK': {
+                'Timeout': 35,
+                'Retries': 3,
+                'Auth_Method': 'standard',
+                'Extended_Compatibility': False
+            },
+            'DLINK': {
+                'Timeout': 40,
+                'Retries': 4,
+                'Auth_Method': 'legacy',
+                'Extended_Compatibility': True
+            },
+            'NETGEAR': {
+                'Timeout': 50,
+                'Retries': 5,
+                'Auth_Method': 'aggressive',
+                'Extended_Compatibility': True
+            }
+        }
+        
+        if vendor in vendor_optimizations:
+            opts = vendor_optimizations[vendor]
+            network['WPS_Timeout'] = opts['Timeout']
+            network['WPS_Retries'] = opts['Retries']
+            network['Auth_Method'] = opts['Auth_Method']
+            network['Extended_Compatibility'] = opts['Extended_Compatibility']
+            
+            # Additional vendor-specific tweaks
+            if vendor == 'ASUS':
+                network['Use_Special_Auth'] = True
+            elif vendor == 'DLINK':
+                network['Legacy_Support'] = True
+            elif vendor == 'NETGEAR':
+                network['Aggressive_Mode'] = True
 
     def _iwScanner(self, skip_output=False) -> dict[int, dict] | bool:
         """Enhanced iw scanner with better router detection."""
-
-        def handleNetwork(_line, result, networks):
-            networks.append({
-                'Security type': 'Unknown',
-                'WPS': False,
-                'WPS version': '1.0',
-                'WPS locked': False,
-                'Model': '',
-                'Model number': '',
-                'Device name': '',
-                'Manufacturer': '',  # Initialize manufacturer field
-                'Signal Stability': 0,
-                'Vendor': 'Unknown',
-                'WPS state': '',
-                'WPS warning': '',
-                'WPS note': '',
-                'Vendor Note': ''
-            })
-            bssid = result.group(1).upper()
-            networks[-1]['BSSID'] = bssid
-            # Add vendor detection
-            networks[-1]['Vendor'] = self.wps_generator._detectVendor(bssid)
-
-        def handleEssid(_line, result, networks):
-            d = result.group(1)
-            networks[-1]['ESSID'] = codecs.decode(d, 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
-
-        def handleLevel(_line, result, networks):
-            networks[-1]['Level'] = int(float(result.group(1)))
-
-        def handleSecurityType(_line, result, networks):
-            sec = networks[-1]['Security type']
-            if result.group(1) == 'capability':
-                if 'Privacy' in result.group(2):
-                    sec = 'WEP'
-                else:
-                    sec = 'Open'
-            elif sec == 'WEP':
-                if result.group(1) == 'RSN':
-                    sec = 'WPA2'
-                elif result.group(1) == 'WPA':
-                    sec = 'WPA'
-            elif sec == 'WPA':
-                if result.group(1) == 'RSN':
-                    sec = 'WPA/WPA2'
-            elif sec == 'WPA2':
-                if result.group(1) == 'PSK SAE':
-                    sec = 'WPA2/WPA3'
-                elif result.group(1) == 'WPA':
-                    sec = 'WPA/WPA2'
-                elif result.group(1) == 'SAE':
-                    sec = 'WPA3'
-            elif sec == 'Open':
-                if result.group(1) == 'RSN' or result.group(1) == 'WPA':
-                    sec = 'WPA/WPA2'
-            networks[-1]['Security type'] = sec
-
-        def handleWps(_line, result, networks):
-            is_wps_enabled = bool(result.group(1))
-            networks[-1]['WPS'] = is_wps_enabled
-            networks[-1]['WPS state'] = 'Configured' if is_wps_enabled else 'Not Configured'
-            
-            # Add signal strength warning
-            if is_wps_enabled and networks[-1].get('Level', -100) < self.MIN_SIGNAL_STRENGTH:
-                networks[-1]['WPS warning'] = 'Weak signal - may affect reliability'
-            
-            # Add vendor-specific notes
-            vendor = networks[-1]['Vendor']
-            if vendor != 'UNKNOWN':
-                networks[-1]['Vendor Note'] = f'Detected {vendor} router - using optimized algorithms'
-
-        def handleWpsVersion(_line, result, networks):
-            wps_ver = networks[-1]['WPS version']
-            wps_ver_filtered = result.group(1).replace('* Version2:', '')
-            
-            # Enhanced version detection
-            if '2.0' in wps_ver_filtered:
-                wps_ver = '2.0'
-            elif '1.0h' in wps_ver_filtered:
-                wps_ver = '1.0h'
-            elif any(v in wps_ver_filtered for v in ['1.0', '1.1', '1.2']):
-                wps_ver = wps_ver_filtered
-            else:
-                wps_ver = '1.0'  # Default to 1.0 if unknown
-            
-            networks[-1]['WPS version'] = wps_ver
-            
-            # Add compatibility warnings based on version
-            if wps_ver == '2.0':
-                networks[-1]['WPS note'] = 'WPS 2.0 - Enhanced security features'
-            elif wps_ver == '1.0h':
-                networks[-1]['WPS note'] = 'WPS 1.0h - Check for vendor-specific features'
-
-        def handleWpsLocked(_line, result, networks):
-            flag = int(result.group(1), 16)
-            if flag:
-                networks[-1]['WPS locked'] = True
-
-        def handleManufacturer(_line, result, networks):
-            """Handle manufacturer information."""
-            if networks:  # Check if we have any networks
-                networks[-1]['Manufacturer'] = result.group(1).strip()
-
-        def handleDeviceName(_line, result, networks):
-            """Handle device name information."""
-            if networks:  # Check if we have any networks
-                networks[-1]['Device name'] = codecs.decode(result.group(1), 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
-
-        def handleModel(_line, result, networks):
-            """Handle model information."""
-            if networks:  # Check if we have any networks
-                networks[-1]['Model'] = codecs.decode(result.group(1), 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
-
-        def handleModelNumber(_line, result, networks):
-            """Handle model number information."""
-            if networks:  # Check if we have any networks
-                networks[-1]['Model number'] = codecs.decode(result.group(1), 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
-
-        networks = []
-        matchers = {
-            re.compile(r'BSS (\S+)( )?\(on \w+\)'): handleNetwork,
-            re.compile(r'SSID: (.*)'): handleEssid,
-            re.compile(r'signal: ([+-]?([0-9]*[.])?[0-9]+) dBm'): handleLevel,
-            re.compile(r'(capability): (.+)'): handleSecurityType,
-            re.compile(r'(RSN):\t [*] Version: (\d+)'): handleSecurityType,
-            re.compile(r'(WPA):\t [*] Version: (\d+)'): handleSecurityType,
-            re.compile(r'WPS:\t [*] Version: (([0-9]*[.])?[0-9]+)'): handleWps,
-            re.compile(r' [*] Version2: (.+)'): handleWpsVersion,
-            re.compile(r' [*] Authentication suites: (.+)'): handleSecurityType,
-            re.compile(r' [*] AP setup locked: (0x[0-9]+)'): handleWpsLocked,
-            re.compile(r' [*] Model: (.*)'): handleModel,
-            re.compile(r' [*] Model Number: (.*)'): handleModelNumber,
-            re.compile(r' [*] Device name: (.*)'): handleDeviceName,
-            re.compile(r' [*] Manufacturer: (.*)'): handleManufacturer  # Fixed manufacturer handler
-        }
-
         try:
             command = ['iw', 'dev', f'{self.INTERFACE}', 'scan']
+            
+            # Add additional scan parameters for better detection
+            command.extend(['--flush', '--type', 'trigger'])  # Force fresh scan
+            
             iw_scan_process = subprocess.run(command,
                 encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 check=True  # This will raise CalledProcessError if the command fails
             )
 
             lines = iw_scan_process.stdout.splitlines()
+            networks = []
 
             for line in lines:
                 if line.startswith('command failed:'):
@@ -299,7 +259,7 @@ class WiFiScanner:
 
                 line = line.strip('\t')
 
-                for regexp, handler in matchers.items():
+                for regexp, handler in self.matchers.items():
                     res = re.match(regexp, line)
                     if res:
                         try:
@@ -308,6 +268,31 @@ class WiFiScanner:
                             print(f'[!] Warning: Error processing line "{line}": {str(e)}')
                             continue
 
+            # Enhanced filtering and validation
+            networks = [net for net in networks if self._validateNetwork(net)]
+
+            if not networks:
+                return False
+
+            # Improved sorting with multiple criteria
+            networks.sort(key=lambda x: (
+                x['Level'],           # Signal strength (primary)
+                not x['WPS'],        # WPS enabled networks first
+                x['WPS locked'],     # Unlocked networks first
+                x.get('Security type', 'Unknown') != 'Open'  # Secured networks first
+            ), reverse=True)
+
+            # Create network list with enhanced information
+            network_list = {(i + 1): self._enhanceNetworkInfo(network) 
+                          for i, network in enumerate(networks)}
+            
+            self.last_scan_results = network_list
+            
+            if not skip_output:
+                self._displayNetworks(network_list)
+
+            return network_list
+
         except subprocess.CalledProcessError as e:
             print(f'[!] Error running iw scan: {str(e)}')
             return False
@@ -315,25 +300,73 @@ class WiFiScanner:
             print(f'[!] Unexpected error during scan: {str(e)}')
             return False
 
-        # Filtering non-WPS networks
-        networks = list(filter(lambda x: bool(x['WPS']), networks))
-
-        if not networks:
+    def _validateNetwork(self, network):
+        """Validate network information and enhance compatibility."""
+        # Must have basic required fields
+        if not all(k in network for k in ['BSSID', 'ESSID', 'Level']):
             return False
+            
+        # Enhanced WPS detection
+        if not network['WPS']:
+            # Some routers don't properly advertise WPS
+            # Check additional indicators
+            if any(indicator in network.get('Device name', '').upper() 
+                  for indicator in ['ROUTER', 'AP', 'WAP', 'WIFI']):
+                network['WPS'] = True
+                network['WPS_Note'] = 'WPS detected through device name'
+            
+        # Signal strength validation
+        if network['Level'] < -85:  # Extremely weak signal
+            network['Warning'] = 'Extremely weak signal - connection may fail'
+            
+        return True
 
-        # Sorting by signal level
-        networks.sort(key=lambda x: x['Level'], reverse=True)
-
-        # Create network list
-        network_list = {(i + 1): network for i, network in enumerate(networks)}
+    def _enhanceNetworkInfo(self, network):
+        """Enhance network information with additional data."""
+        # Add vendor information if available
+        if 'Vendor' not in network or network['Vendor'] == 'Unknown':
+            network['Vendor'] = self.wps_generator._detectVendor(network['BSSID'])
+            
+        # Enhanced security information
+        if network.get('Security type') == 'WPA2':
+            if 'PSK' in network.get('Authentication suites', ''):
+                network['Security type'] = 'WPA2-PSK'
+            elif 'SAE' in network.get('Authentication suites', ''):
+                network['Security type'] = 'WPA3-Transition'
+                
+        # Add compatibility rating
+        network['Compatibility_Rating'] = self._calculateCompatibility(network)
         
-        # Update last scan results
-        self.last_scan_results = network_list
-        
-        if not skip_output:
-            self._displayNetworks(network_list)
+        return network
 
-        return network_list
+    def _calculateCompatibility(self, network):
+        """Calculate compatibility rating for the network."""
+        score = 100
+        
+        # Signal strength impact
+        if network['Level'] < -75:
+            score -= 30
+        elif network['Level'] < -70:
+            score -= 20
+        elif network['Level'] < -65:
+            score -= 10
+            
+        # WPS version impact
+        if network['WPS version'] == '2.0':
+            score -= 15  # WPS 2.0 is generally harder to work with
+        elif network['WPS version'] == '1.0h':
+            score -= 5   # 1.0h has some additional security
+            
+        # Vendor impact
+        if network['Vendor'] != 'Unknown':
+            if network['Vendor'] in ['ASUS', 'TPLINK', 'DLINK']:
+                score += 10  # These vendors typically work well
+                
+        # Security type impact
+        if network.get('Security type') == 'WPA3-Transition':
+            score -= 20  # WPA3 can be problematic
+            
+        return max(0, min(100, score))  # Keep score between 0 and 100
 
     def _displayNetworks(self, network_list):
         """Display network list with proper formatting."""
