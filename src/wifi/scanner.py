@@ -21,7 +21,8 @@ class WiFiScanner:
         self.SCAN_RETRIES = 3  # Number of scan retries for better accuracy
         self.SCAN_DELAY = 2  # Delay between scans in seconds
         self.wps_generator = src.wps.generator.WPSpin()  # Initialize WPS generator for vendor detection
-
+        self.last_scan_results = None  # Store last scan results
+        
         reports_fname = REPORTS_DIR + 'stored.csv'
         self.STORED = self._loadStoredNetworks(reports_fname)
 
@@ -38,6 +39,50 @@ class WiFiScanner:
             print(f'[!] Warning: Error loading stored networks: {str(e)}')
             return []
 
+    def _getCurrentSignalStrength(self, bssid: str) -> int:
+        """Get current signal strength for a specific BSSID."""
+        try:
+            # Try to use cached results first
+            if self.last_scan_results:
+                for network in self.last_scan_results.values():
+                    if network['BSSID'] == bssid:
+                        return network['Level']
+
+            # If not found in cache, do a new scan
+            networks = self._iwScanner(skip_output=True)
+            if networks:
+                self.last_scan_results = networks  # Update cache
+                for network in networks.values():
+                    if network['BSSID'] == bssid:
+                        return network['Level']
+            
+            return -100  # Return very weak signal if not found
+        except Exception as e:
+            print(f'[!] Warning: Error getting signal strength: {str(e)}')
+            return -100
+
+    def _getWPSVersion(self, bssid: str) -> str:
+        """Get WPS version for a specific BSSID."""
+        try:
+            # Try to use cached results first
+            if self.last_scan_results:
+                for network in self.last_scan_results.values():
+                    if network['BSSID'] == bssid:
+                        return network['WPS version']
+
+            # If not found in cache, do a new scan
+            networks = self._iwScanner(skip_output=True)
+            if networks:
+                self.last_scan_results = networks  # Update cache
+                for network in networks.values():
+                    if network['BSSID'] == bssid:
+                        return network['WPS version']
+            
+            return '1.0'  # Default to 1.0 if not found
+        except Exception as e:
+            print(f'[!] Warning: Error getting WPS version: {str(e)}')
+            return '1.0'
+
     def _averageSignalStrength(self, networks, num_scans=3):
         """Calculate average signal strength over multiple scans."""
         signal_strengths = {}
@@ -45,6 +90,7 @@ class WiFiScanner:
         for _ in range(num_scans):
             current_networks = self._iwScanner(skip_output=True)
             if current_networks:
+                self.last_scan_results = current_networks  # Update cache
                 for net in current_networks.values():
                     bssid = net['BSSID']
                     if bssid not in signal_strengths:
@@ -280,6 +326,9 @@ class WiFiScanner:
 
         # Create network list
         network_list = {(i + 1): network for i, network in enumerate(networks)}
+        
+        # Update last scan results
+        self.last_scan_results = network_list
         
         if not skip_output:
             self._displayNetworks(network_list)
