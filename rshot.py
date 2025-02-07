@@ -85,15 +85,29 @@ def main(args):
     
     if src.utils.isAndroid():
         android_network = src.wifi.android.AndroidNetwork()
+        # Enable WiFi only once at the start
+        android_network.enableWifi(force_enable=True)
     
     # Main loop
+    max_retries = 3
+    retry_count = 0
+    
     while True:
         try:
             # Get target network
             if not args.bssid:
                 args.bssid = wifi_scanner.promptNetwork()
                 if not args.bssid:
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        print('[!] Maximum retry attempts reached. Exiting...')
+                        return 1
+                    print(f'[*] Retrying scan... (Attempt {retry_count + 1}/{max_retries})')
+                    time.sleep(2)  # Wait before retry
                     continue
+            
+            # Reset retry counter after successful scan
+            retry_count = 0
             
             # Get current signal strength and WPS version
             signal_strength = wifi_scanner._getCurrentSignalStrength(args.bssid)
@@ -128,23 +142,26 @@ def main(args):
             # Handle result
             if res:
                 print('[+] Session completed successfully')
-                if args.iface_down:
-                    src.utils.ifaceCtl(args.interface, action='down')
                 return 0
             
             if not args.loop:
                 return 1
             
             args.bssid = None
+            time.sleep(1)  # Small delay before next scan
             
         except KeyboardInterrupt:
             print('\n[!] Interrupted by user')
-            if args.iface_down:
-                src.utils.ifaceCtl(args.interface, action='down')
             return 1
-        finally:
-            if android_network:
-                android_network.enableWifi()
+        except Exception as e:
+            print(f'[!] Error: {str(e)}')
+            retry_count += 1
+            if retry_count >= max_retries:
+                print('[!] Maximum retry attempts reached. Exiting...')
+                return 1
+            print(f'[*] Retrying... (Attempt {retry_count + 1}/{max_retries})')
+            time.sleep(2)
+            continue
 
 if __name__ == '__main__':
     # Set up signal handler
@@ -174,7 +191,11 @@ if __name__ == '__main__':
         src.utils.die(f'Unable to up interface \'{args.interface}\'')
 
     try:
-        sys.exit(main(args))
+        exit_code = main(args)
+        sys.exit(exit_code)
+    except Exception as e:
+        print(f'[!] Fatal error: {str(e)}')
+        sys.exit(1)
     finally:
         # Cleanup
         if args.iface_down:

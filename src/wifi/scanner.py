@@ -108,11 +108,23 @@ class WiFiScanner:
 
     def promptNetwork(self) -> str:
         """Enhanced network selection with signal strength analysis."""
-        networks = self._iwScanner()
+        max_retries = 3
+        retry_delay = 2
+        
+        for retry in range(max_retries):
+            networks = self._iwScanner()
+            if networks:
+                break
+            
+            if retry < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            else:
+                print('[-] Unable to find any networks after multiple attempts')
+                return None
 
         if not networks:
-            print('[-] No WPS networks found.')
-            return
+            return None
 
         # Show prompt immediately
         print('\nSelect target (press Enter to refresh):')
@@ -156,7 +168,6 @@ class WiFiScanner:
                     wps_ver = selected_network['WPS version']
                     if wps_ver == '2.0':
                         print('[!] Note: WPS 2.0 detected - using enhanced security measures')
-                        # Adjust connection parameters for WPS 2.0
                         self._adjustWPS2Parameters(selected_network)
                     elif wps_ver == '1.0h':
                         print('[*] WPS 1.0h detected - optimizing for better compatibility')
@@ -170,11 +181,11 @@ class WiFiScanner:
                     
                     return selected_network['BSSID']
 
-                raise IndexError
-            except IndexError:
                 print('Invalid number')
             except ValueError:
                 print('Please enter a number')
+            except KeyboardInterrupt:
+                return None
 
     def _adjustWPS2Parameters(self, network):
         """Adjust parameters for WPS 2.0 routers."""
@@ -239,18 +250,29 @@ class WiFiScanner:
     def _iwScanner(self, skip_output=False) -> dict[int, dict] | bool:
         """Enhanced iw scanner with better router detection."""
         try:
+            # Basic scan command without problematic parameters
             command = ['iw', 'dev', f'{self.INTERFACE}', 'scan']
             
-            # Add additional scan parameters for better detection
-            command.extend(['--flush', '--type', 'trigger'])  # Force fresh scan
-            
-            iw_scan_process = subprocess.run(command,
-                encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                check=True  # This will raise CalledProcessError if the command fails
-            )
+            try:
+                iw_scan_process = subprocess.run(command,
+                    encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    check=True
+                )
+            except subprocess.CalledProcessError as e:
+                if "Device or resource busy" in str(e.output):
+                    print("[!] Device is busy, waiting...")
+                    time.sleep(1)  # Wait before retry
+                    return False
+                elif "Network is down" in str(e.output):
+                    print("[!] Network interface is down")
+                    return False
+                else:
+                    print(f'[!] Scan error: {str(e.output)}')
+                    return False
 
             lines = iw_scan_process.stdout.splitlines()
             networks = []
+            current_network = None
 
             for line in lines:
                 if line.startswith('command failed:'):
@@ -258,31 +280,69 @@ class WiFiScanner:
                     return False
 
                 line = line.strip('\t')
+                
+                # Initialize new network when BSS line is found
+                if "BSS " in line:
+                    if current_network:
+                        networks.append(current_network)
+                    current_network = {
+                        'Security type': 'Unknown',
+                        'WPS': False,
+                        'WPS version': '1.0',
+                        'WPS locked': False,
+                        'Model': '',
+                        'Model number': '',
+                        'Device name': '',
+                        'Manufacturer': '',
+                        'Signal Stability': 0,
+                        'Vendor': 'Unknown',
+                        'WPS state': '',
+                        'WPS warning': '',
+                        'WPS note': '',
+                        'Vendor Note': ''
+                    }
+                    bssid = line.split('BSS ')[1].split('(')[0].strip().upper()
+                    current_network['BSSID'] = bssid
+                    current_network['Vendor'] = self.wps_generator._detectVendor(bssid)
+                    continue
 
-                for regexp, handler in self.matchers.items():
-                    res = re.match(regexp, line)
-                    if res:
-                        try:
-                            handler(line, res, networks)
-                        except Exception as e:
-                            print(f'[!] Warning: Error processing line "{line}": {str(e)}')
-                            continue
+                if not current_network:
+                    continue
 
-            # Enhanced filtering and validation
+                # Process other information
+                if 'SSID: ' in line:
+                    essid = line.split('SSID: ')[1]
+                    current_network['ESSID'] = codecs.decode(essid, 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
+                elif 'signal: ' in line:
+                    signal = line.split('signal: ')[1].split(' ')[0]
+                    current_network['Level'] = int(float(signal))
+                elif 'WPS: ' in line:
+                    current_network['WPS'] = True
+                elif 'WPS Version: ' in line:
+                    if '2.0' in line:
+                        current_network['WPS version'] = '2.0'
+                elif 'Authentication Suites' in line:
+                    if 'PSK' in line:
+                        current_network['Security type'] = 'WPA2-PSK'
+                    elif 'SAE' in line:
+                        current_network['Security type'] = 'WPA3'
+
+            # Add the last network if exists
+            if current_network:
+                networks.append(current_network)
+
+            # Filter and validate networks
             networks = [net for net in networks if self._validateNetwork(net)]
 
             if not networks:
+                if not skip_output:
+                    print('[-] No WPS networks found.')
                 return False
 
-            # Improved sorting with multiple criteria
-            networks.sort(key=lambda x: (
-                x['Level'],           # Signal strength (primary)
-                not x['WPS'],        # WPS enabled networks first
-                x['WPS locked'],     # Unlocked networks first
-                x.get('Security type', 'Unknown') != 'Open'  # Secured networks first
-            ), reverse=True)
+            # Sort networks by signal strength
+            networks.sort(key=lambda x: x['Level'], reverse=True)
 
-            # Create network list with enhanced information
+            # Create network list
             network_list = {(i + 1): self._enhanceNetworkInfo(network) 
                           for i, network in enumerate(networks)}
             
@@ -293,9 +353,6 @@ class WiFiScanner:
 
             return network_list
 
-        except subprocess.CalledProcessError as e:
-            print(f'[!] Error running iw scan: {str(e)}')
-            return False
         except Exception as e:
             print(f'[!] Unexpected error during scan: {str(e)}')
             return False
