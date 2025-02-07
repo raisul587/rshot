@@ -111,9 +111,13 @@ class WiFiScanner:
                 'Model': '',
                 'Model number': '',
                 'Device name': '',
-                'Manufacturer': '',
+                'Manufacturer': '',  # Initialize manufacturer field
                 'Signal Stability': 0,
-                'Vendor': 'Unknown'
+                'Vendor': 'Unknown',
+                'WPS state': '',
+                'WPS warning': '',
+                'WPS note': '',
+                'Vendor Note': ''
             })
             bssid = result.group(1).upper()
             networks[-1]['BSSID'] = bssid
@@ -195,17 +199,25 @@ class WiFiScanner:
             if flag:
                 networks[-1]['WPS locked'] = True
 
-        def handleModel(_line, result, networks):
-            d = result.group(1)
-            networks[-1]['Model'] = codecs.decode(d, 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
-
-        def handleModelNumber(_line: str, result: str, networks: list):
-            d = result.group(1)
-            networks[-1]['Model number'] = codecs.decode(d, 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
+        def handleManufacturer(_line, result, networks):
+            """Handle manufacturer information."""
+            if networks:  # Check if we have any networks
+                networks[-1]['Manufacturer'] = result.group(1).strip()
 
         def handleDeviceName(_line, result, networks):
-            d = result.group(1)
-            networks[-1]['Device name'] = codecs.decode(d, 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
+            """Handle device name information."""
+            if networks:  # Check if we have any networks
+                networks[-1]['Device name'] = codecs.decode(result.group(1), 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
+
+        def handleModel(_line, result, networks):
+            """Handle model information."""
+            if networks:  # Check if we have any networks
+                networks[-1]['Model'] = codecs.decode(result.group(1), 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
+
+        def handleModelNumber(_line, result, networks):
+            """Handle model number information."""
+            if networks:  # Check if we have any networks
+                networks[-1]['Model number'] = codecs.decode(result.group(1), 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
 
         networks = []
         matchers = {
@@ -222,29 +234,40 @@ class WiFiScanner:
             re.compile(r' [*] Model: (.*)'): handleModel,
             re.compile(r' [*] Model Number: (.*)'): handleModelNumber,
             re.compile(r' [*] Device name: (.*)'): handleDeviceName,
-            # Add support for additional router information
-            re.compile(r' [*] Manufacturer: (.*)'): lambda l, r, n: setattr(n[-1], 'Manufacturer', r.group(1)),
-            re.compile(r' [*] OS Version: (.*)'): lambda l, r, n: setattr(n[-1], 'OS Version', r.group(1))
+            re.compile(r' [*] Manufacturer: (.*)'): handleManufacturer  # Fixed manufacturer handler
         }
 
-        command = ['iw', 'dev', f'{self.INTERFACE}', 'scan']
-        iw_scan_process = subprocess.run(command,
-            encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-        )
+        try:
+            command = ['iw', 'dev', f'{self.INTERFACE}', 'scan']
+            iw_scan_process = subprocess.run(command,
+                encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                check=True  # This will raise CalledProcessError if the command fails
+            )
 
-        lines = iw_scan_process.stdout.splitlines()
+            lines = iw_scan_process.stdout.splitlines()
 
-        for line in lines:
-            if line.startswith('command failed:'):
-                print('[!] Error:', line)
-                return False
+            for line in lines:
+                if line.startswith('command failed:'):
+                    print('[!] Error:', line)
+                    return False
 
-            line = line.strip('\t')
+                line = line.strip('\t')
 
-            for regexp, handler in matchers.items():
-                res = re.match(regexp, line)
-                if res:
-                    handler(line, res, networks)
+                for regexp, handler in matchers.items():
+                    res = re.match(regexp, line)
+                    if res:
+                        try:
+                            handler(line, res, networks)
+                        except Exception as e:
+                            print(f'[!] Warning: Error processing line "{line}": {str(e)}')
+                            continue
+
+        except subprocess.CalledProcessError as e:
+            print(f'[!] Error running iw scan: {str(e)}')
+            return False
+        except Exception as e:
+            print(f'[!] Unexpected error during scan: {str(e)}')
+            return False
 
         # Filtering non-WPS networks
         networks = list(filter(lambda x: bool(x['WPS']), networks))
@@ -255,92 +278,107 @@ class WiFiScanner:
         # Sorting by signal level
         networks.sort(key=lambda x: x['Level'], reverse=True)
 
-        # Putting a list of networks in a dictionary, where each key is a network number in list of networks
+        # Create network list
         network_list = {(i + 1): network for i, network in enumerate(networks)}
+        
+        if not skip_output:
+            self._displayNetworks(network_list)
+
+        return network_list
+
+    def _displayNetworks(self, network_list):
+        """Display network list with proper formatting."""
         network_list_items = list(network_list.items())
 
-        def truncateStr(s: str, length: int, postfix='…') -> str:
-            """Truncate string with the specified length."""
+        print('Network marks: {1} {0} {2} {0} {3} {0} {4} {0} {5}'.format(
+            '|',
+            self._colored('Vulnerable model', color='green'),
+            self._colored('Vulnerable WPS ver.', color='dark_green'),
+            self._colored('WPS locked', color='red'),
+            self._colored('Already stored', color='yellow'),
+            self._colored('Known vendor', color='blue')
+        ))
 
-            if len(s) > length:
-                k = length - len(postfix)
-                s = s[:k] + postfix
-            return s
-
-        def colored(text: str, color: str) -> str:
-            """Enhanced colored text with more status indicators"""
-            if color:
-                if color == 'green':
-                    text = f'\033[1m\033[92m{text}\033[00m'
-                if color == 'dark_green':
-                    text = f'\033[32m{text}\033[00m'
-                elif color == 'red':
-                    text = f'\033[1m\033[91m{text}\033[00m'
-                elif color == 'yellow':
-                    text = f'\033[1m\033[93m{text}\033[00m'
-                elif color == 'blue':
-                    text = f'\033[1m\033[94m{text}\033[00m'
-                else:
-                    return text
-            else:
-                return text
-            return text
-
-        if not skip_output:
-            print('Network marks: {1} {0} {2} {0} {3} {0} {4} {0} {5}'.format(
-                '|',
-                colored('Vulnerable model', color='green'),
-                colored('Vulnerable WPS ver.', color='dark_green'),
-                colored('WPS locked', color='red'),
-                colored('Already stored', color='yellow'),
-                colored('Known vendor', color='blue')
-            ))
-
-        def entryMaxLength(item: str, max_length=27) -> int:
-            """Calculates max length of network_list_items entry"""
-
-            lengths = [len(entry[1][item]) for entry in network_list_items]
-            return min(max(lengths), max_length) + 1
-
-        # Used to calculate the max width of a collum in the network list table
+        # Calculate column lengths
         columm_lengths = {
             '#': 4,
-            'sec': entryMaxLength('Security type'),
+            'sec': self._entryMaxLength(network_list_items, 'Security type'),
             'bssid': 18,
-            'essid': entryMaxLength('ESSID'),
-            'name': entryMaxLength('Device name'),
-            'model': entryMaxLength('Model')
+            'essid': self._entryMaxLength(network_list_items, 'ESSID'),
+            'name': self._entryMaxLength(network_list_items, 'Device name'),
+            'model': self._entryMaxLength(network_list_items, 'Model')
         }
 
-        row = '{:<{#}} {:<{bssid}} {:<{essid}} {:<{sec}} {:<{#}} {:<{#}} {:<{name}} {:<{model}}'
-
-        print(row.format(
+        # Print header
+        row_format = '{:<{#}} {:<{bssid}} {:<{essid}} {:<{sec}} {:<{#}} {:<{#}} {:<{name}} {:<{model}}'
+        print(row_format.format(
             '#', 'BSSID', 'ESSID', 'Sec.', 'PWR', 'Ver.', 'WSC name', 'WSC model',
             **columm_lengths
         ))
 
-        if args.reverse_scan:
-            network_list_items = network_list_items[::-1]
+        # Print networks
         for n, network in network_list_items:
-            number = f'{n})'
-            model = f'{network['Model']} {network['Model number']}'
-            essid = truncateStr(network['ESSID'], 25)
-            device_name = truncateStr(network['Device name'], 27)
-            line = row.format(
-                number, network['BSSID'], essid,
-                network['Security type'], network['Level'],
-                network['WPS version'], device_name, model,
+            self._displayNetwork(n, network, row_format, columm_lengths)
+
+    @staticmethod
+    def _colored(text: str, color: str) -> str:
+        """Enhanced colored text with more status indicators"""
+        colors = {
+            'green': '\033[1m\033[92m',
+            'dark_green': '\033[32m',
+            'red': '\033[1m\033[91m',
+            'yellow': '\033[1m\033[93m',
+            'blue': '\033[1m\033[94m'
+        }
+        return f"{colors.get(color, '')}{text}\033[00m" if color in colors else text
+
+    @staticmethod
+    def _entryMaxLength(items, key, max_length=27) -> int:
+        """Calculate maximum length for a column."""
+        try:
+            lengths = [len(str(entry[1].get(key, ''))) for entry in items]
+            return min(max(lengths), max_length) + 1
+        except Exception:
+            return max_length
+
+    def _displayNetwork(self, number, network, row_format, columm_lengths):
+        """Display a single network entry."""
+        try:
+            number_str = f'{number})'
+            essid = self._truncateStr(network.get('ESSID', ''), 25)
+            device_name = self._truncateStr(network.get('Device name', ''), 27)
+            model = f"{network.get('Model', '')} {network.get('Model number', '')}"
+
+            line = row_format.format(
+                number_str,
+                network.get('BSSID', ''),
+                essid,
+                network.get('Security type', 'Unknown'),
+                network.get('Level', 0),
+                network.get('WPS version', '1.0'),
+                device_name,
+                model,
                 **columm_lengths
             )
-            if (network['BSSID'], network['ESSID']) in self.STORED:
-                print(colored(line, color='yellow'))
-            elif network['WPS version'] == '1.0':
-                print(colored(line, color='dark_green'))
-            elif network['WPS locked']:
-                print(colored(line, color='red'))
-            elif self.VULN_LIST and (model in self.VULN_LIST) or (device_name in self.VULN_LIST):
-                print(colored(line, color='green'))
+
+            # Determine line color
+            if (network.get('BSSID', ''), network.get('ESSID', '')) in self.STORED:
+                print(self._colored(line, 'yellow'))
+            elif network.get('WPS version') == '1.0':
+                print(self._colored(line, 'dark_green'))
+            elif network.get('WPS locked'):
+                print(self._colored(line, 'red'))
+            elif self.VULN_LIST and (model in self.VULN_LIST or device_name in self.VULN_LIST):
+                print(self._colored(line, 'green'))
             else:
                 print(line)
+        except Exception as e:
+            print(f'[!] Error displaying network {number}: {str(e)}')
 
-        return network_list
+    def _truncateStr(self, s: str, length: int, postfix='…') -> str:
+        """Truncate string with the specified length."""
+
+        if len(s) > length:
+            k = length - len(postfix)
+            s = s[:k] + postfix
+        return s
