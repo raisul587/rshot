@@ -118,12 +118,18 @@ class WPSpin:
 
     def getLikely(self, bssid: str, model: Optional[str] = None) -> Optional[str]:
         """Returns a likely pin."""
-        res = self._getSuggestedList(bssid, model)
-        if not res:
-            # If no pins found, try default static pins for this MAC prefix
-            if bssid.upper().startswith('B0:A7:B9'):
-                return '12345670'  # Common default for some router models
-        return res[0] if res else None
+        suggested = self._getSuggested(bssid, model)
+        if not suggested:
+            return None
+            
+        # For B0:A7:B9 devices, prefer static PINs first
+        if bssid.upper().startswith('B0:A7:B9'):
+            static_pins = [pin for pin in suggested if pin['id'] == 'static']
+            if static_pins:
+                return static_pins[0]['pin']
+                
+        # Otherwise return the highest confidence PIN
+        return suggested[0]['pin']
 
     @staticmethod
     def checksum(pin: int) -> int:
@@ -187,6 +193,46 @@ class WPSpin:
         
         res = []
         
+        # Special handling for B0:A7:B9 devices (Loop Engineer)
+        if bssid.upper().startswith('B0:A7:B9'):
+            # Common static PINs for this vendor
+            static_pins = [
+                '12345670',
+                '00000000',
+                '88888888',
+                '01234567'
+            ]
+            for pin in static_pins:
+                res.append({
+                    'id': 'static',
+                    'name': 'Common Static PIN',
+                    'pin': pin,
+                    'confidence': 0.8
+                })
+            
+            # MAC-based algorithms
+            mac_pins = [
+                # Last 7 digits of MAC
+                mac.INTEGER & 0xFFFFFFF,
+                # Last 6 digits of MAC
+                mac.INTEGER & 0xFFFFFF,
+                # Reversed last 6 digits
+                int(format(mac.INTEGER & 0xFFFFFF, '06x')[::-1], 16),
+                # XOR with common masks
+                (mac.INTEGER & 0xFFFFFF) ^ 0x555555,
+                (mac.INTEGER & 0xFFFFFF) ^ 0xAAAAAA
+            ]
+            
+            for pin_base in mac_pins:
+                pin = pin_base % 10000000
+                pin_str = str(pin) + str(self.checksum(pin))
+                res.append({
+                    'id': 'mac_based',
+                    'name': 'MAC-based Algorithm',
+                    'pin': pin_str.zfill(8),
+                    'confidence': 0.6
+                })
+
         # First try ML predictions if we have vendor information
         if vendor_name:
             ml_predictions = self.pin_predictor.predict_pins(bssid, vendor_name, model)
@@ -210,16 +256,19 @@ class WPSpin:
                 })
 
         # Finally try legacy algorithms for backward compatibility
-        legacy_algos = self._suggest_legacy(bssid)
-        for algo_id in legacy_algos:
-            algo = self.LEGACY_ALGOS[algo_id]
-            pin = self._generate_legacy(algo_id, bssid)
-            res.append({
-                'id': algo_id,
-                'name': f"Legacy - {algo['name']}",
-                'pin': pin
-            })
+        if not bssid.upper().startswith('B0:A7:B9'):  # Skip for B0:A7:B9 as we handled it above
+            legacy_algos = self._suggest_legacy(bssid)
+            for algo_id in legacy_algos:
+                algo = self.LEGACY_ALGOS[algo_id]
+                pin = self._generate_legacy(algo_id, bssid)
+                res.append({
+                    'id': algo_id,
+                    'name': f"Legacy - {algo['name']}",
+                    'pin': pin
+                })
 
+        # Sort by confidence if available
+        res.sort(key=lambda x: x.get('confidence', 0), reverse=True)
         return res
 
     def _getSuggestedList(self, bssid: str, model: Optional[str] = None) -> List[str]:
@@ -291,12 +340,6 @@ class WPSpin:
             # Use last 7 digits of the MAC for the base PIN
             pin = mac.INTEGER & 0xFFFFFFF
             pin = pin % 10000000  # Ensure 7 digits
-            return str(pin) + str(self.checksum(pin))
-        elif bssid.upper().startswith('B0:A7:B9'):
-            # Special handling for B0:A7:B9 prefix
-            # Try using last 7 digits of MAC with a different mask
-            pin = (mac.INTEGER & 0xFFFFFFF) ^ 0x1234567
-            pin = pin % 10000000
             return str(pin) + str(self.checksum(pin))
 
         pin = pin % 10000000
