@@ -119,9 +119,11 @@ class WPSpin:
     def getLikely(self, bssid: str, model: Optional[str] = None) -> Optional[str]:
         """Returns a likely pin."""
         res = self._getSuggestedList(bssid, model)
-        if res:
-            return res[0]
-        return None
+        if not res:
+            # If no pins found, try default static pins for this MAC prefix
+            if bssid.upper().startswith('B0:A7:B9'):
+                return '12345670'  # Common default for some router models
+        return res[0] if res else None
 
     @staticmethod
     def checksum(pin: int) -> int:
@@ -237,16 +239,16 @@ class WPSpin:
                 '90C7D8', '98FFD0', '9C5D12', 'A0AB1B', 'A4C64F', 'AC9A96',
                 'B07E70', 'B0B2DC', 'C4A81D', 'C82E47', 'CCB255', 'D86CE9',
                 'DC7144', 'E86D52', 'E8CD2D', 'EC233D', 'EC4D47', 'F8C091',
-                'D4BF7F4', '0C8063'  # Added your router's prefix
+                'D4BF7F4', 'B0A7B9'  # Added B0A7B9 prefix
             ),
             'pin28': (
                 '200BC7', '4846FB', 'D46AA8', 'F84ABF', '0014D1', '000D88',
-                '001D7E', '002275', '08863B'
+                '001D7E', '002275', '08863B', '0C8063'
             ),
             'pin32': (
                 '000726', 'D8FEE3', 'FC8B97', '144D67', '2008ED', '207355',
                 '24336C', '28EE52', '4C09B4', '4CAC0A', '6045CB', '88E3AB',
-                '9094E4', 'BC1401', 'C8D15E'
+                '9094E4', 'BC1401', 'C8D15E', 'B0A7B9'  # Added B0A7B9 prefix as fallback
             ),
             'pinDLink': (
                 '14D64D', '1C7EE5', '28107B', '84C9B2', 'A0AB1B', 'B8A386',
@@ -267,9 +269,9 @@ class WPSpin:
             if any(mac.startswith(mask) for mask in masks):
                 res.append(algo_id)
         
-        # If no specific algorithm matched, add some default algorithms
+        # If no specific algorithm matched, try all algorithms in order of likelihood
         if not res:
-            res.extend(['pin24', 'pin32'])  # Try these common algorithms as fallback
+            res.extend(['pin28', 'pin24', 'pin32'])
             
         return res
 
@@ -283,6 +285,19 @@ class WPSpin:
 
         if self.LEGACY_ALGOS[algo]['mode'] == self.ALGO_EMPTY:
             return pin
+
+        # Special handling for certain MAC prefixes
+        if bssid.upper().startswith('0C:80:63'):
+            # Use last 7 digits of the MAC for the base PIN
+            pin = mac.INTEGER & 0xFFFFFFF
+            pin = pin % 10000000  # Ensure 7 digits
+            return str(pin) + str(self.checksum(pin))
+        elif bssid.upper().startswith('B0:A7:B9'):
+            # Special handling for B0:A7:B9 prefix
+            # Try using last 7 digits of MAC with a different mask
+            pin = (mac.INTEGER & 0xFFFFFFF) ^ 0x1234567
+            pin = pin % 10000000
+            return str(pin) + str(self.checksum(pin))
 
         pin = pin % 10000000
         pin = str(pin) + str(self.checksum(pin))
