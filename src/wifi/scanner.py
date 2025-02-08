@@ -9,6 +9,7 @@ import threading
 from src.utils import REPORTS_DIR
 import src.wps.generator
 import src.args
+import src.wifi.android
 
 args = src.args.parseArgs()
 
@@ -253,6 +254,13 @@ class WiFiScanner:
             # Basic scan command without problematic parameters
             command = ['iw', 'dev', f'{self.INTERFACE}', 'scan']
             
+            # Temporarily enable WiFi for scanning if on Android
+            android_network = None
+            if src.utils.isAndroid():
+                android_network = src.wifi.android.AndroidNetwork()
+                android_network.enableWifi(force_enable=True, whisper=True)
+                time.sleep(2)  # Wait for interface to be ready
+            
             try:
                 iw_scan_process = subprocess.run(command,
                     encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -269,6 +277,10 @@ class WiFiScanner:
                 else:
                     print(f'[!] Scan error: {str(e.output)}')
                     return False
+            finally:
+                # Disable WiFi after scanning if on Android
+                if android_network:
+                    android_network.disableWifi(whisper=True)
 
             lines = iw_scan_process.stdout.splitlines()
             networks = []
@@ -355,6 +367,9 @@ class WiFiScanner:
 
         except Exception as e:
             print(f'[!] Unexpected error during scan: {str(e)}')
+            # Ensure WiFi is disabled on error
+            if android_network:
+                android_network.disableWifi(whisper=True)
             return False
 
     def _validateNetwork(self, network):

@@ -2,53 +2,56 @@ import subprocess
 import time
 
 class AndroidNetwork:
-    """Manages android Wi-Fi-related settings"""
+    """Enhanced Android network management."""
 
     def __init__(self):
-        self.ENABLED_SCANNING = 0
-
-    def storeAlwaysScanState(self):
-        """Stores Initial Wi-Fi 'always-scanning' state, so it can be restored on exit"""
-
-        settings_cmd = ['settings', 'get', 'global', 'wifi_scan_always_enabled']
-
-        is_scanning_on = subprocess.run(settings_cmd,
-            encoding='utf-8', stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=True
-        )
-        is_scanning_on = is_scanning_on.stdout.strip()
-
-        if is_scanning_on == '1':
-            self.ENABLED_SCANNING = 1
-
-    def disableWifi(self, force_disable: bool = False, whisper: bool = False):
-        """Disable Wi-Fi connectivity on Android."""
-
-        if whisper is False:
-            print('[*] Android: disabling Wi-Fi')
-
-        wifi_disable_scanner_cmd = ['cmd', 'wifi', 'set-wifi-enabled', 'disabled']
-        wifi_disable_always_scanning_cmd = ['cmd', '-w', 'wifi', 'set-scan-always-available', 'disabled']
-
-        # Disable Android Wi-Fi scanner
-        subprocess.run(wifi_disable_scanner_cmd)
-
-        # Always scanning for networks causes the interface to be occupied by android
-        if self.ENABLED_SCANNING == 1 or force_disable is True:
-            subprocess.run(wifi_disable_always_scanning_cmd)
-
-        time.sleep(3)
+        self.WIFI_ENABLED = False
+        self.ALWAYS_SCAN = False
 
     def enableWifi(self, force_enable: bool = False, whisper: bool = False):
-        """Enable Wi-Fi connectivity on Android."""
-
-        if whisper is False:
+        """Enable WiFi with better state tracking."""
+        if not whisper:
             print('[*] Android: enabling Wi-Fi')
+        
+        try:
+            subprocess.run(['cmd', 'wifi', 'enable'], check=True, capture_output=True)
+            self.WIFI_ENABLED = True
+            if not whisper:
+                print('[+] WiFi enabled successfully')
+            time.sleep(1)  # Give system time to process
+        except Exception as e:
+            if not whisper:
+                print(f'[!] Error enabling WiFi: {str(e)}')
 
-        wifi_enable_scanner_cmd = ['cmd', 'wifi', 'set-wifi-enabled', 'enabled']
-        wifi_enable_always_scanning_cmd = ['cmd', '-w', 'wifi', 'set-scan-always-available', 'enabled']
+    def disableWifi(self, whisper: bool = False):
+        """Disable WiFi with better state tracking."""
+        if not whisper:
+            print('[*] Android: disabling Wi-Fi')
+        
+        try:
+            subprocess.run(['cmd', 'wifi', 'disable'], check=True, capture_output=True)
+            self.WIFI_ENABLED = False
+            if not whisper:
+                print('[+] WiFi disabled successfully')
+            time.sleep(1)  # Give system time to process
+        except Exception as e:
+            if not whisper:
+                print(f'[!] Error disabling WiFi: {str(e)}')
 
-        # Enable Android Wi-Fi scanner
-        subprocess.run(wifi_enable_scanner_cmd)
+    def storeAlwaysScanState(self):
+        """Store WiFi scan state."""
+        try:
+            result = subprocess.run(['settings', 'get', 'global', 'wifi_scan_always_enabled'],
+                                 check=True, capture_output=True, text=True)
+            self.ALWAYS_SCAN = result.stdout.strip() == '1'
+        except Exception:
+            self.ALWAYS_SCAN = False
 
-        if self.ENABLED_SCANNING == 1 or force_enable is True:
-            subprocess.run(wifi_enable_always_scanning_cmd)
+    def restoreAlwaysScanState(self):
+        """Restore WiFi scan state."""
+        if self.ALWAYS_SCAN:
+            try:
+                subprocess.run(['settings', 'put', 'global', 'wifi_scan_always_enabled', '1'],
+                             check=True, capture_output=True)
+            except Exception:
+                pass

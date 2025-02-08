@@ -85,8 +85,7 @@ def main(args):
     
     if src.utils.isAndroid():
         android_network = src.wifi.android.AndroidNetwork()
-        # Enable WiFi only once at the start
-        android_network.enableWifi(force_enable=True)
+        # We don't enable WiFi here anymore - scanner will handle it
     
     # Main loop
     max_retries = 3
@@ -108,6 +107,12 @@ def main(args):
             
             # Reset retry counter after successful scan
             retry_count = 0
+            
+            # Ensure WiFi is disabled before attack on Android
+            if android_network:
+                print('[*] Disabling WiFi for attack...')
+                android_network.disableWifi()
+                time.sleep(1)  # Wait for interface to settle
             
             # Get current signal strength and WPS version
             signal_strength = wifi_scanner._getCurrentSignalStrength(args.bssid)
@@ -162,6 +167,10 @@ def main(args):
             print(f'[*] Retrying... (Attempt {retry_count + 1}/{max_retries})')
             time.sleep(2)
             continue
+        finally:
+            # Always try to disable WiFi after attack on Android
+            if android_network:
+                android_network.disableWifi(whisper=True)
 
 if __name__ == '__main__':
     # Set up signal handler
