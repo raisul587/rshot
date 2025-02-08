@@ -42,8 +42,8 @@ class RouterConfig:
             'router_config.yaml'
         )
         self.config = self._load_config()
-        self.vendors = self._parse_vendors()
         self.default_timing = self._parse_default_timing()
+        self.vendors = self._parse_vendors()
 
     def _load_config(self) -> dict:
         """Load configuration from YAML file."""
