@@ -229,18 +229,48 @@ class WPSpin:
         """Get legacy algorithm suggestions for a BSSID."""
         mac = bssid.replace(':', '').upper()
         algorithms = {
-            'pin24': ('04BF6D', '0E5D4E', '107BEF', '14A9E3'),  # Shortened for example
-            'pin28': ('200BC7', '4846FB', 'D46AA8', 'F84ABF'),
-            'pin32': ('000726', 'D8FEE3', 'FC8B97'),  # Shortened for example
-            'pinDLink': ('14D64D', '1C7EE5', '28107B'),  # Shortened for example
-            'pinASUS': ('049226', '04D9F5', '08606E'),  # Shortened for example
-            'pinAirocon': ('0007262F', '000B2B4A')  # Shortened for example
+            'pin24': (
+                '04BF6D', '0E5D4E', '107BEF', '14A9E3', '28285D', '32B2DC', 
+                '381766', '404A03', '40B7F3', '44E9DD', '48EE0C', '5CE50C', 
+                '62233D', '626BD3', '646CB2', '66B0B4', '0022F7', '788DF7', 
+                '789682', '7C8BCA', '8C68C8', '8CAB8E', '8CE748', '8CF228', 
+                '90C7D8', '98FFD0', '9C5D12', 'A0AB1B', 'A4C64F', 'AC9A96',
+                'B07E70', 'B0B2DC', 'C4A81D', 'C82E47', 'CCB255', 'D86CE9',
+                'DC7144', 'E86D52', 'E8CD2D', 'EC233D', 'EC4D47', 'F8C091',
+                'D4BF7F4', '0C8063'  # Added your router's prefix
+            ),
+            'pin28': (
+                '200BC7', '4846FB', 'D46AA8', 'F84ABF', '0014D1', '000D88',
+                '001D7E', '002275', '08863B'
+            ),
+            'pin32': (
+                '000726', 'D8FEE3', 'FC8B97', '144D67', '2008ED', '207355',
+                '24336C', '28EE52', '4C09B4', '4CAC0A', '6045CB', '88E3AB',
+                '9094E4', 'BC1401', 'C8D15E'
+            ),
+            'pinDLink': (
+                '14D64D', '1C7EE5', '28107B', '84C9B2', 'A0AB1B', 'B8A386',
+                'C0A0BB', 'CCB255', 'FC7516'
+            ),
+            'pinASUS': (
+                '049226', '04D9F5', '08606E', '0862669', '107B44', '10BF48',
+                '14DDA9', '1C872C', '2C56DC', '305A3A', '382C4A', '40167E',
+                '50465D', '54A050', '6045CB', 'AC220B', 'BC9CC5', 'E03F49'
+            ),
+            'pinAirocon': (
+                '0007262F', '000B2B4A', '000726B', '00168F'
+            )
         }
         
         res = []
         for algo_id, masks in algorithms.items():
             if any(mac.startswith(mask) for mask in masks):
                 res.append(algo_id)
+        
+        # If no specific algorithm matched, add some default algorithms
+        if not res:
+            res.extend(['pin24', 'pin32'])  # Try these common algorithms as fallback
+            
         return res
 
     def _generate_legacy(self, algo: str, bssid: str) -> str:
