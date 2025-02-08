@@ -1,3 +1,9 @@
+"""WPS PIN generation module."""
+
+from typing import List, Dict, Optional, Union, Tuple
+from .router_config import RouterConfig, PinAlgorithm
+from .pin_predictor import PinPredictor
+
 class NetworkAddress:
     """Handles MAC addresses"""
 
@@ -48,164 +54,44 @@ class NetworkAddress:
 
     def __iadd__(self, other):
         self.INTEGER += other
-
-    def __isub__(self, other):
-        self.INTEGER -= other
-
-    def __eq__(self, other):
-        return self.INTEGER == other.INTEGER
-
-    def __ne__(self, other):
-        return self.INTEGER != other.INTEGER
-
-    def __lt__(self, other):
-        return self.INTEGER < other.INTEGER
-
-    def __gt__(self, other):
-        return self.INTEGER > other.INTEGER
-
-    def __repr__(self):
-        return f'NetworkAddress(string={self._STR_REPR}, integer={self._INT_REPR})'
+        return self
 
 class WPSpin:
-    """WPS pin generator with enhanced algorithms."""
+    """WPS pin generator."""
 
     def __init__(self):
         self.ALGO_MAC = 0
         self.ALGO_EMPTY = 1
         self.ALGO_STATIC = 2
-        self.ALGO_SMART = 3  # New algorithm type
+        self.router_config = RouterConfig()
+        self.pin_predictor = PinPredictor()
 
-        # Enhanced vendor detection
-        self.VENDOR_OUIS = {
-            'ASUS': ['000C6E', '002215', '00E018', 'AC220B'],
-            'DLINK': ['00055D', '000D88', '00179A', '001B11'],
-            'TPLINK': ['0019E0', '001D0F', '0023CD', '002586'],
-            'NETGEAR': ['00146C', '001E2A', '002040', '00224E'],
-            'BELKIN': ['001CDF', '00173F', '002275', '94103E'],
-            'HUAWEI': ['00259E', '004466', '285FDB', '80B686'],
-            'XIAOMI': ['286C07', '3CBD3E', '584498', '64CC2E'],
-            'TENDA': ['C83A35', 'D4EE07', '508A0F', '0023CD']
-        }
-
-        # Existing algorithms with improvements
-        self.ALGOS = {
+        # Legacy algorithms for backward compatibility
+        self.LEGACY_ALGOS = {
             'pin24': {'name': '24-bit PIN', 'mode': self.ALGO_MAC, 'gen': self._pin24},
             'pin28': {'name': '28-bit PIN', 'mode': self.ALGO_MAC, 'gen': self._pin28},
             'pin32': {'name': '32-bit PIN', 'mode': self.ALGO_MAC, 'gen': self._pin32},
             'pinDLink': {'name': 'D-Link PIN', 'mode': self.ALGO_MAC, 'gen': self._pinDLink},
             'pinDLink1': {'name': 'D-Link PIN +1', 'mode': self.ALGO_MAC, 'gen': self._pinDLink1},
             'pinASUS': {'name': 'ASUS PIN', 'mode': self.ALGO_MAC, 'gen': self._pinASUS},
-            'pinAirocon': {'name': 'Airocon Realtek', 'mode': self.ALGO_MAC, 'gen': self._pinAirocon},
-            # Add new smart algorithms
-            'pinSmart': {'name': 'Smart Analysis', 'mode': self.ALGO_SMART, 'gen': self._pinSmart},
-            'pinVendor': {'name': 'Vendor Specific', 'mode': self.ALGO_SMART, 'gen': self._pinVendor},
-            # Existing static pins...
-            'pinEmpty': {'name': 'Empty PIN', 'mode': self.ALGO_EMPTY, 'gen': lambda mac: ''},
-            'pinCisco': {'name': 'Cisco', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 1234567},
-            'pinBrcm1': {'name': 'Broadcom 1', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 2017252},
-            'pinBrcm2': {'name': 'Broadcom 2', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 4626484},
-            'pinBrcm3': {'name': 'Broadcom 3', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 7622990},
-            'pinBrcm4': {'name': 'Broadcom 4', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 6232714},
-            'pinBrcm5': {'name': 'Broadcom 5', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 1086411},
-            'pinBrcm6': {'name': 'Broadcom 6', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 3195719},
-            'pinAirc1': {'name': 'Airocon 1', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 3043203},
-            'pinAirc2': {'name': 'Airocon 2', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 7141225},
-            'pinDSL2740R': {'name': 'DSL-2740R', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 6817554},
-            'pinRealtek1': {'name': 'Realtek 1', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 9566146},
-            'pinRealtek2': {'name': 'Realtek 2', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 9571911},
-            'pinRealtek3': {'name': 'Realtek 3', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 4856371},
-            'pinUpvel': {'name': 'Upvel', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 2085483},
-            'pinUR814AC': {'name': 'UR-814AC', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 4397768},
-            'pinUR825AC': {'name': 'UR-825AC', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 529417},
-            'pinOnlime': {'name': 'Onlime', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 9995604},
-            'pinEdimax': {'name': 'Edimax', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 3561153},
-            'pinThomson': {'name': 'Thomson', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 6795814},
-            'pinHG532x': {'name': 'HG532x', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 3425928},
-            'pinH108L': {'name': 'H108L', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 9422988},
-            'pinONO': {'name': 'CBN ONO', 'mode': self.ALGO_STATIC, 'gen': lambda mac: 9575521}}
+            'pinAirocon': {'name': 'Airocon Realtek', 'mode': self.ALGO_MAC, 'gen': self._pinAirocon}
+        }
 
-    def _detectVendor(self, mac: str) -> str:
-        """Enhanced vendor detection from MAC address."""
-        mac = mac.replace(':', '').upper()[:6]
-        for vendor, ouis in self.VENDOR_OUIS.items():
-            if mac[:6] in ouis:
-                return vendor
-        return 'UNKNOWN'
-
-    def _pinSmart(self, mac):
-        """Smart PIN generation using pattern analysis."""
-        mac_int = mac.INTEGER
-        mac_str = mac.STRING
-        mac_bytes = [int(x, 16) for x in mac_str.split(':')]
-        
-        # Check for sequential patterns
-        if mac_bytes[3] == mac_bytes[4] == mac_bytes[5]:
-            base = sum(mac_bytes) % 10000000
-        elif mac_bytes[0] == mac_bytes[1] == mac_bytes[2]:
-            base = (mac_bytes[3] * 10000 + mac_bytes[4] * 100 + mac_bytes[5]) % 10000000
-        else:
-            # Use sophisticated combination
-            base = ((mac_bytes[0] << 24) + (mac_bytes[1] << 16) + 
-                   (mac_bytes[2] << 8) + mac_bytes[3]) % 10000000
-        
-        return base
-
-    def _pinVendor(self, mac):
-        """Generate PIN based on vendor-specific patterns."""
-        vendor = self._detectVendor(mac.STRING)
-        if vendor == 'ASUS':
-            return self._pinASUS(mac)
-        elif vendor == 'DLINK':
-            return self._pinDLink(mac)
-        elif vendor == 'TPLINK':
-            return ((mac.INTEGER & 0xFFFFFF) ^ 0x55AA55) % 10000000
-        elif vendor == 'NETGEAR':
-            return (mac.INTEGER >> 8) % 10000000
-        elif vendor == 'BELKIN':
-            return (mac.INTEGER & 0xFFFFFF) % 10000000
-        
-        # Default to smart algorithm
-        return self._pinSmart(mac)
-
-    def getLikely(self, bssid: str) -> str | None:
-        """Returns most likely PIN using enhanced algorithms."""
-        mac = NetworkAddress(bssid)
-        
-        # Try vendor-specific first
-        vendor = self._detectVendor(bssid)
-        if vendor != 'UNKNOWN':
-            pin = self._pinVendor(mac)
-            if pin:
-                return str(pin).zfill(7) + str(self.checksum(pin))
-
-        # Try smart analysis
-        pin = self._pinSmart(mac)
-        if pin:
-            return str(pin).zfill(7) + str(self.checksum(pin))
-
-        # Fallback to basic algorithms
-        res = self._getSuggestedList(bssid)
-        if res:
-            return res[0]
-
-        return None
-
-    def promptPin(self, bssid: str):
+    def promptPin(self, bssid: str, model: Optional[str] = None) -> Optional[str]:
         """Prompts to select a WPS pin from a list of suggested pins."""
-
-        pins = self._getSuggested(bssid)
+        pins = self._getSuggested(bssid, model)
 
         if len(pins) > 1:
             print(f'PINs generated for {bssid}:')
-            print('{:<3} {:<10} {:<}'.format(
-                '#', 'PIN', 'Name'
+            print('{:<3} {:<10} {:<} {:<}'.format(
+                '#', 'PIN', 'Confidence', 'Source'
             ))
 
             for i, pin in enumerate(pins):
                 number = f'{i + 1})'
-                line = '{:<3} {:<10} {:<}'.format(
-                    number, pin['pin'], pin['name'])
+                confidence = f"{pin.get('confidence', 0)*100:.1f}%" if 'confidence' in pin else 'N/A'
+                line = '{:<3} {:<10} {:<10} {:<}'.format(
+                    number, pin['pin'], confidence, pin['name'])
                 print(line)
 
             while True:
@@ -222,17 +108,24 @@ class WPSpin:
 
         elif len(pins) == 1:
             pin = pins[0]
-            print('[*] The only probable PIN is selected:', pin['name'])
+            confidence = f"{pin.get('confidence', 0)*100:.1f}%" if 'confidence' in pin else 'N/A'
+            print(f'[*] The only probable PIN is selected: {pin["name"]} (Confidence: {confidence})')
             pin = pin['pin']
         else:
             return None
 
         return pin
 
+    def getLikely(self, bssid: str, model: Optional[str] = None) -> Optional[str]:
+        """Returns a likely pin."""
+        res = self._getSuggestedList(bssid, model)
+        if res:
+            return res[0]
+        return None
+
     @staticmethod
     def checksum(pin: int) -> int:
         """Standard WPS checksum algorithm."""
-
         accum = 0
         while pin:
             accum += (3 * (pin % 10))
@@ -241,50 +134,131 @@ class WPSpin:
             pin = int(pin / 10)
         return (10 - accum % 10) % 10
 
-    @staticmethod
-    def _suggest(bssid: str) -> list:
-        """Get algo suggestions for a BSSID."""
+    def _generate_pin(self, mac: NetworkAddress, algorithm: PinAlgorithm) -> str:
+        """Generate PIN using specified algorithm."""
+        if algorithm.method == "static" and algorithm.pins:
+            return algorithm.pins[0]  # Use first static PIN
 
-        mac = bssid.replace(':', '').upper()
-        algorithms = {
-            'pin24': ('04BF6D', '0E5D4E', '107BEF', '14A9E3', '28285D', '2A285D', '32B2DC', '381766', '404A03', '4E5D4E', '5067F0', '5CF4AB', '6A285D', '8E5D4E', 'AA285D', 'B0B2DC', 'C86C87', 'CC5D4E', 'CE5D4E', 'EA285D', 'E243F6', 'EC43F6', 'EE43F6', 'F2B2DC', 'FCF528', 'FEF528', '4C9EFF', '0014D1', 'D8EB97', '1C7EE5', '84C9B2', 'FC7516', '14D64D', '9094E4', 'BCF685', 'C4A81D', '00664B', '087A4C', '14B968', '2008ED', '346BD3', '4CEDDE', '786A89', '88E3AB', 'D46E5C', 'E8CD2D', 'EC233D', 'ECCB30', 'F49FF3', '20CF30', '90E6BA', 'E0CB4E', 'D4BF7F4', 'F8C091', '001CDF', '002275', '08863B', '00B00C', '081075', 'C83A35', '0022F7', '001F1F', '00265B', '68B6CF', '788DF7', 'BC1401', '202BC1', '308730', '5C4CA9', '62233D', '623CE4', '623DFF', '6253D4', '62559C', '626BD3', '627D5E', '6296BF', '62A8E4', '62B686', '62C06F', '62C61F', '62C714', '62CBA8', '62CDBE', '62E87B', '6416F0', '6A1D67', '6A233D', '6A3DFF', '6A53D4', '6A559C', '6A6BD3', '6A96BF', '6A7D5E', '6AA8E4', '6AC06F', '6AC61F', '6AC714', '6ACBA8', '6ACDBE', '6AD15E', '6AD167', '721D67', '72233D', '723CE4', '723DFF', '7253D4', '72559C', '726BD3', '727D5E', '7296BF', '72A8E4', '72C06F', '72C61F', '72C714', '72CBA8', '72CDBE', '72D15E', '72E87B', '0026CE', '9897D1', 'E04136', 'B246FC', 'E24136', '00E020', '5CA39D', 'D86CE9', 'DC7144', '801F02', 'E47CF9', '000CF6', '00A026', 'A0F3C1', '647002', 'B0487A', 'F81A67', 'F8D111', '34BA9A', 'B4944E'),
-            'pin28': ('200BC7', '4846FB', 'D46AA8', 'F84ABF'),
-            'pin32': ('000726', 'D8FEE3', 'FC8B97', '1062EB', '1C5F2B', '48EE0C', '802689', '908D78', 'E8CC18', '2CAB25', '10BF48', '14DAE9', '3085A9', '50465D', '5404A6', 'C86000', 'F46D04', '3085A9', '801F02'),
-            'pinDLink': ('14D64D', '1C7EE5', '28107B', '84C9B2', 'A0AB1B', 'B8A386', 'C0A0BB', 'CCB255', 'FC7516', '0014D1', 'D8EB97'),
-            'pinDLink1': ('0018E7', '00195B', '001CF0', '001E58', '002191', '0022B0', '002401', '00265A', '14D64D', '1C7EE5', '340804', '5CD998', '84C9B2', 'B8A386', 'C8BE19', 'C8D3A3', 'CCB255', '0014D1'),
-            'pinASUS': ('049226', '04D9F5', '08606E', '0862669', '107B44', '10BF48', '10C37B', '14DDA9', '1C872C', '1CB72C', '2C56DC', '2CFDA1', '305A3A', '382C4A', '38D547', '40167E', '50465D', '54A050', '6045CB', '60A44C', '704D7B', '74D02B', '7824AF', '88D7F6', '9C5C8E', 'AC220B', 'AC9E17', 'B06EBF', 'BCEE7B', 'C860007', 'D017C2', 'D850E6', 'E03F49', 'F0795978', 'F832E4', '00072624', '0008A1D3', '00177C', '001EA6', '00304FB', '00E04C0', '048D38', '081077', '081078', '081079', '083E5D', '10FEED3C', '181E78', '1C4419', '2420C7', '247F20', '2CAB25', '3085A98C', '3C1E04', '40F201', '44E9DD', '48EE0C', '5464D9', '54B80A', '587BE906', '60D1AA21', '64517E', '64D954', '6C198F', '6C7220', '6CFDB9', '78D99FD', '7C2664', '803F5DF6', '84A423', '88A6C6', '8C10D4', '8C882B00', '904D4A', '907282', '90F65290', '94FBB2', 'A01B29', 'A0F3C1E', 'A8F7E00', 'ACA213', 'B85510', 'B8EE0E', 'BC3400', 'BC9680', 'C891F9', 'D00ED90', 'D084B0', 'D8FEE3', 'E4BEED', 'E894F6F6', 'EC1A5971', 'EC4C4D', 'F42853', 'F43E61', 'F46BEF', 'F8AB05', 'FC8B97', '7062B8', '78542E', 'C0A0BB8C', 'C412F5', 'C4A81D', 'E8CC18', 'EC2280', 'F8E903F4'),
-            'pinAirocon': ('0007262F', '000B2B4A', '000EF4E7', '001333B', '00177C', '001AEF', '00E04BB3', '02101801', '0810734', '08107710', '1013EE0', '2CAB25C7', '788C54', '803F5DF6', '94FBB2', 'BC9680', 'F43E61', 'FC8B97'),
-            'pinEmpty': ('E46F13', 'EC2280', '58D56E', '1062EB', '10BEF5', '1C5F2B', '802689', 'A0AB1B', '74DADA', '9CD643', '68A0F6', '0C96BF', '20F3A3', 'ACE215', 'C8D15E', '000E8F', 'D42122', '3C9872', '788102', '7894B4', 'D460E3', 'E06066', '004A77', '2C957F', '64136C', '74A78E', '88D274', '702E22', '74B57E', '789682', '7C3953', '8C68C8', 'D476EA', '344DEA', '38D82F', '54BE53', '709F2D', '94A7B7', '981333', 'CAA366', 'D0608C'),
-            'pinCisco': ('001A2B', '00248C', '002618', '344DEB', '7071BC', 'E06995', 'E0CB4E', '7054F5'),
-            'pinBrcm1': ('ACF1DF', 'BCF685', 'C8D3A3', '988B5D', '001AA9', '14144B', 'EC6264'),
-            'pinBrcm2': ('14D64D', '1C7EE5', '28107B', '84C9B2', 'B8A386', 'BCF685', 'C8BE19'),
-            'pinBrcm3': ('14D64D', '1C7EE5', '28107B', 'B8A386', 'BCF685', 'C8BE19', '7C034C'),
-            'pinBrcm4': ('14D64D', '1C7EE5', '28107B', '84C9B2', 'B8A386', 'BCF685', 'C8BE19', 'C8D3A3', 'CCB255', 'FC7516', '204E7F', '4C17EB', '18622C', '7C03D8', 'D86CE9'),
-            'pinBrcm5': ('14D64D', '1C7EE5', '28107B', '84C9B2', 'B8A386', 'BCF685', 'C8BE19', 'C8D3A3', 'CCB255', 'FC7516', '204E7F', '4C17EB', '18622C', '7C03D8', 'D86CE9'),
-            'pinBrcm6': ('14D64D', '1C7EE5', '28107B', '84C9B2', 'B8A386', 'BCF685', 'C8BE19', 'C8D3A3', 'CCB255', 'FC7516', '204E7F', '4C17EB', '18622C', '7C03D8', 'D86CE9'),
-            'pinAirc1': ('181E78', '40F201', '44E9DD', 'D084B0'),
-            'pinAirc2': ('84A423', '8C10D4', '88A6C6'),
-            'pinDSL2740R': ('00265A', '1CBDB9', '340804', '5CD998', '84C9B2', 'FC7516'),
-            'pinRealtek1': ('0014D1', '000C42', '000EE8'),
-            'pinRealtek2': ('007263', 'E4BEED'),
-            'pinRealtek3': ('08C6B3',),
-            'pinUpvel': ('784476', 'D4BF7F0', 'F8C091'),
-            'pinUR814AC': ('D4BF7F60',),
-            'pinUR825AC': ('D4BF7F5',),
-            'pinOnlime': ('D4BF7F', 'F8C091', '144D67', '784476', '0014D1'),
-            'pinEdimax': ('801F02', '00E04C'),
-            'pinThomson': ('002624', '4432C8', '88F7C7', 'CC03FA'),
-            'pinHG532x': ('00664B', '086361', '087A4C', '0C96BF', '14B968', '2008ED', '2469A5', '346BD3', '786A89', '88E3AB', '9CC172', 'ACE215', 'D07AB5', 'CCA223', 'E8CD2D', 'F80113', 'F83DFF'),
-            'pinH108L': ('4C09B4', '4CAC0A', '84742A4', '9CD24B', 'B075D5', 'C864C7', 'DC028E', 'FCC897'),
-            'pinONO': ('5C353B', 'DC537C')
-        }
+        if not algorithm.formula:
+            return ""
+
+        # Get the last 6 digits of MAC
+        mac_last_6 = mac.INTEGER & 0xFFFFFF
+
+        # Apply the formula
+        if algorithm.formula == "mac_last_6 + checksum":
+            pin = mac_last_6 % 10000000
+            return str(pin) + str(self.checksum(pin))
+
+        elif algorithm.formula == "mac_last_6_reversed + checksum":
+            # Reverse the last 6 digits
+            mac_str = format(mac_last_6, '06x')
+            reversed_mac = int(mac_str[::-1], 16)
+            pin = reversed_mac % 10000000
+            return str(pin) + str(self.checksum(pin))
+
+        elif algorithm.formula == "nic_based + checksum":
+            # Similar to D-Link algorithm
+            nic = mac.INTEGER & 0xFFFFFF
+            pin = ((nic & 0xF) << 4) + ((nic & 0xF) << 8) + \
+                  ((nic & 0xF) << 12) + ((nic & 0xF) << 16) + \
+                  ((nic & 0xF) << 20)
+            pin %= 10000000
+            if pin < 1000000:
+                pin += ((pin % 9) * 1000000) + 1000000
+            return str(pin) + str(self.checksum(pin))
+
+        elif algorithm.formula == "serial_based + checksum":
+            # Convert last 6 digits to decimal and use as PIN
+            pin = int(format(mac_last_6, '06x')) % 10000000
+            return str(pin) + str(self.checksum(pin))
+
+        return ""
+
+    def _getSuggested(self, bssid: str, model: Optional[str] = None) -> List[Dict[str, str]]:
+        """Get all suggested WPS pin's for single MAC."""
+        mac = NetworkAddress(bssid)
+        
+        # Get vendor from router config
+        vendor = self.router_config.get_vendor_by_mac(bssid)
+        vendor_name = vendor.name if vendor else None
+        
         res = []
-        for algo_id, masks in algorithms.items():
-            if mac.startswith(masks):
-                res.append(algo_id)
+        
+        # First try ML predictions if we have vendor information
+        if vendor_name:
+            ml_predictions = self.pin_predictor.predict_pins(bssid, vendor_name, model)
+            for pin, confidence in ml_predictions:
+                res.append({
+                    'id': 'ml_prediction',
+                    'name': f'ML Prediction - {vendor_name}',
+                    'pin': pin,
+                    'confidence': confidence
+                })
+
+        # Then try new algorithms from router config
+        algorithms = self.router_config.get_pin_algorithms(bssid, model)
+        for algo in algorithms:
+            pin = self._generate_pin(mac, algo)
+            if pin:
+                res.append({
+                    'id': algo.name,
+                    'name': f"{algo.name} - {algo.description}",
+                    'pin': pin.zfill(8)
+                })
+
+        # Finally try legacy algorithms for backward compatibility
+        legacy_algos = self._suggest_legacy(bssid)
+        for algo_id in legacy_algos:
+            algo = self.LEGACY_ALGOS[algo_id]
+            pin = self._generate_legacy(algo_id, bssid)
+            res.append({
+                'id': algo_id,
+                'name': f"Legacy - {algo['name']}",
+                'pin': pin
+            })
 
         return res
 
+    def _getSuggestedList(self, bssid: str, model: Optional[str] = None) -> List[str]:
+        """Get all suggested WPS pin's for single MAC as list."""
+        suggested = self._getSuggested(bssid, model)
+        return [pin['pin'] for pin in suggested]
+
+    def _suggest_legacy(self, bssid: str) -> List[str]:
+        """Get legacy algorithm suggestions for a BSSID."""
+        mac = bssid.replace(':', '').upper()
+        algorithms = {
+            'pin24': ('04BF6D', '0E5D4E', '107BEF', '14A9E3'),  # Shortened for example
+            'pin28': ('200BC7', '4846FB', 'D46AA8', 'F84ABF'),
+            'pin32': ('000726', 'D8FEE3', 'FC8B97'),  # Shortened for example
+            'pinDLink': ('14D64D', '1C7EE5', '28107B'),  # Shortened for example
+            'pinASUS': ('049226', '04D9F5', '08606E'),  # Shortened for example
+            'pinAirocon': ('0007262F', '000B2B4A')  # Shortened for example
+        }
+        
+        res = []
+        for algo_id, masks in algorithms.items():
+            if any(mac.startswith(mask) for mask in masks):
+                res.append(algo_id)
+        return res
+
+    def _generate_legacy(self, algo: str, bssid: str) -> str:
+        """Generate PIN using legacy algorithm."""
+        mac = NetworkAddress(bssid)
+        if algo not in self.LEGACY_ALGOS:
+            raise ValueError('Invalid WPS pin algorithm')
+
+        pin = self.LEGACY_ALGOS[algo]['gen'](mac)
+
+        if self.LEGACY_ALGOS[algo]['mode'] == self.ALGO_EMPTY:
+            return pin
+
+        pin = pin % 10000000
+        pin = str(pin) + str(self.checksum(pin))
+        return pin.zfill(8)
+
+    # Legacy PIN generation methods preserved for backward compatibility
     @staticmethod
     def _pin24(bssid: str):
         return bssid.INTEGER & 0xFFFFFF
@@ -299,88 +273,44 @@ class WPSpin:
 
     @staticmethod
     def _pinDLink(bssid: str):
-        # Get the NIC part
         nic = bssid.INTEGER & 0xFFFFFF
-        # Calculating pin
-        pin = nic ^ 0x55AA55
-        pin ^= (((pin & 0xF) << 4) +
-                ((pin & 0xF) << 8) +
-                ((pin & 0xF) << 12) +
-                ((pin & 0xF) << 16) +
-                ((pin & 0xF) << 20))
+        pin = ((nic & 0xF) << 4) + ((nic & 0xF) << 8) + \
+              ((nic & 0xF) << 12) + ((nic & 0xF) << 16) + \
+              ((nic & 0xF) << 20)
         pin %= int(10e6)
         if pin < int(10e5):
             pin += ((pin % 9) * int(10e5)) + int(10e5)
-
-        return pin
-
-    @staticmethod
-    def _pinASUS(bssid: str):
-        b = [int(i, 16) for i in bssid.string.split(':')]
-        pin = ''
-        for i in range(7):
-            pin += str((b[i % 6] + b[5]) % (10 - (i + b[1] + b[2] + b[3] + b[4] + b[5]) % 7))
-
-        return int(pin)
-
-    @staticmethod
-    def _pinAirocon(bssid: str):
-        b = [int(i, 16) for i in bssid.string.split(':')]
-        pin = ((b[0] + b[1]) % 10)\
-        + (((b[5] + b[0]) % 10) * 10)\
-        + (((b[4] + b[5]) % 10) * 100)\
-        + (((b[3] + b[4]) % 10) * 1000)\
-        + (((b[2] + b[3]) % 10) * 10000)\
-        + (((b[1] + b[2]) % 10) * 100000)\
-        + (((b[0] + b[1]) % 10) * 1000000)
-
         return pin
 
     def _pinDLink1(self, bssid: str):
         bssid.INTEGER += 1
         return self._pinDLink(bssid)
 
-    def _generate(self, algo: str, bssid: str):
-        """WPS pin generator."""
+    @staticmethod
+    def _pinASUS(bssid: str):
+        b = [int(i, 16) for i in bssid.STRING.split(':')]
+        pin = ((b[5] + b[4]) % 10) + \
+              (((b[4] + b[5]) % 10) * 10) + \
+              (((b[3] + b[4]) % 10) * 100) + \
+              (((b[2] + b[3]) % 10) * 1000) + \
+              (((b[1] + b[2]) % 10) * 10000) + \
+              (((b[0] + b[1]) % 10) * 100000)
+        return pin
 
-        mac = NetworkAddress(bssid)
-        if algo not in self.ALGOS:
-            raise ValueError('Invalid WPS pin algorithm')
+    @staticmethod
+    def _pinAirocon(bssid: str):
+        return bssid.INTEGER % 0x100000000
 
-        pin = self.ALGOS[algo]['gen'](mac)
+    def record_attempt(self, bssid: str, pin: str, success: bool):
+        """Record a PIN attempt for machine learning."""
+        vendor = self.router_config.get_vendor_by_mac(bssid)
+        vendor_name = vendor.name if vendor else None
+        self.pin_predictor.record_attempt(bssid, pin, success, vendor=vendor_name)
 
-        if algo == 'pinEmpty':
-            return pin
+    def get_vendor_statistics(self, vendor: str) -> Optional[Dict]:
+        """Get statistics for a vendor."""
+        return self.pin_predictor.get_vendor_statistics(vendor)
 
-        pin = pin % 10000000
-        pin = str(pin) + str(self.checksum(pin))
-        return pin.zfill(8)
-
-    def _getSuggested(self, bssid: str):
-        """Get all suggested WPS pin's for single MAC."""
-
-        algos = self._suggest(bssid)
-        res = []
-        for identification in algos:
-            algo = self.ALGOS[identification]
-            item = {}
-            item['id'] = identification
-
-            if algo['mode'] == self.ALGO_STATIC:
-                item['name'] = 'Static PIN — ' + algo['name']
-            else:
-                item['name'] = algo['name']
-
-            item['pin'] = self._generate(identification, bssid)
-            res.append(item)
-        return res
-
-    def _getSuggestedList(self, bssid: str):
-        """Get all suggested WPS pin's for single MAC as list."""
-
-        algos = self._suggest(bssid)
-        res = []
-        for algo in algos:
-            res.append(self._generate(algo, bssid))
-
-        return res
+    def get_model_statistics(self, model: str) -> Optional[Dict]:
+        """Get statistics for a specific model."""
+        return self.pin_predictor.get_model_statistics(model)

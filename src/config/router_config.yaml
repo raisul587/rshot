@@ -1,0 +1,184 @@
+# Router Vendor Configuration
+# This file contains router vendor information and PIN generation rules
+
+version: "1.0"
+
+# Default timing configurations
+default_timing:
+  initial_delay: 0.5  # seconds
+  retry_delay: 1.0    # seconds
+  max_retries: 3
+  backoff_factor: 2.0
+
+# Vendor-specific configurations
+vendors:
+  tp_link:
+    name: "TP-Link"
+    models:
+      archer_series:
+        - "Archer_A9"
+        - "Archer A2"
+        - "Archer A5"
+        - "Archer C2"
+        - "Archer C5"
+        - "Archer C6"
+        - "Archer C20"
+        - "Archer C50"
+        - "Archer MR200"
+        - "Archer VR300"
+        - "Archer VR400"
+    mac_prefixes:
+      - "EC086B"  # TP-Link
+      - "B0487A"
+      - "F81A67"
+      - "F8D111"
+      - "34BA9A"
+      - "B4944E"
+    pin_algorithms:
+      - name: "tp_link_new"
+        description: "Algorithm for newer TP-Link routers (2020+)"
+        models:
+          - "Archer C6"
+          - "Archer A5"
+        method: "mac_based"
+        formula: "mac_last_6_reversed + checksum"
+      - name: "tp_link_archer"
+        description: "Algorithm for Archer series"
+        models:
+          - "Archer C50"
+          - "Archer A9"
+        method: "static"
+        pins: ["12345670"]
+    timing:
+      initial_delay: 1.0
+      retry_delay: 2.0
+      max_retries: 5
+
+  asus:
+    name: "ASUS"
+    models:
+      rt_series:
+        - "RT-AC66U"
+        - "RT-AC68U"
+        - "RT-AX55"
+        - "RT-AC1200"
+        - "RT-N10U"
+        - "RT-N12"
+        - "RT-N56U"
+    mac_prefixes:
+      - "049226"
+      - "04D9F5"
+      - "08606E"
+      - "107B44"
+      - "10BF48"
+      - "1C872C"
+      - "2C56DC"
+      - "305A3A"
+      - "382C4A"
+      - "40167E"
+      - "50465D"
+      - "54A050"
+      - "6045CB"
+    pin_algorithms:
+      - name: "asus_rt"
+        description: "Algorithm for RT series routers"
+        method: "mac_based"
+        formula: "mac_last_6 + checksum"
+    timing:
+      initial_delay: 0.8
+      retry_delay: 1.5
+      max_retries: 4
+
+  d_link:
+    name: "D-Link"
+    models:
+      dir_series:
+        - "DIR-615"
+        - "DIR-655"
+        - "DIR-809"
+        - "DIR-842"
+        - "DIR-819"
+    mac_prefixes:
+      - "14D64D"
+      - "1C7EE5"
+      - "28107B"
+      - "84C9B2"
+      - "A0AB1B"
+      - "B8A386"
+      - "C0A0BB"
+      - "CCB255"
+    pin_algorithms:
+      - name: "dlink_new"
+        description: "Algorithm for newer D-Link routers"
+        method: "mac_based"
+        formula: "nic_based + checksum"
+      - name: "dlink_old"
+        description: "Legacy algorithm for older D-Link routers"
+        method: "static"
+        pins: ["12345670", "01234567"]
+    timing:
+      initial_delay: 1.2
+      retry_delay: 2.0
+      max_retries: 3
+
+  netgear:
+    name: "NETGEAR"
+    models:
+      - "R6220"
+      - "R6260"
+      - "R6900P"
+      - "R7000"
+      - "WN3000RP"
+      - "WNDR3400"
+      - "WNDR3700"
+    mac_prefixes:
+      - "00146C"
+      - "004075"
+      - "00223F"
+      - "00265A"
+      - "008EF2"
+      - "04A151"
+      - "08028E"
+      - "08BD43"
+      - "20E52A"
+      - "28C68E"
+      - "2C3033"
+      - "308730"
+      - "404A03"
+    pin_algorithms:
+      - name: "netgear_new"
+        description: "Algorithm for newer Netgear routers"
+        method: "mac_based"
+        formula: "serial_based + checksum"
+      - name: "netgear_wn"
+        description: "Algorithm for WN series"
+        method: "static"
+        pins: ["20250974", "43141615"]
+    timing:
+      initial_delay: 1.0
+      retry_delay: 1.8
+      max_retries: 4
+
+# PIN generation methods
+pin_methods:
+  mac_based:
+    - name: "mac_last_6"
+      description: "Uses last 6 digits of MAC address"
+    - name: "mac_last_6_reversed"
+      description: "Uses last 6 digits of MAC address in reverse"
+    - name: "nic_based"
+      description: "Uses NIC part of MAC address"
+    - name: "serial_based"
+      description: "Uses serial number derived from MAC"
+
+# WPS version compatibility
+wps_versions:
+  - version: "1.0"
+    vulnerable: true
+    description: "Original WPS version, vulnerable to brute force"
+  - version: "2.0"
+    vulnerable: false
+    description: "Improved security with rate limiting"
+  - version: "3.0"
+    vulnerable: false
+    description: "Latest version with additional security measures" 
